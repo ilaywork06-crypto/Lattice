@@ -94,9 +94,15 @@ branch on role: managers act directly; editors open a change-request dialog.
 - `GET /search?q=&limit=` (viewer+) → `{ query, total, items[], locations[], users[] }`.
   `SearchHit = { kind: item|location|user, id, title, subtitle, badge, state?, link }`. Ranked exact → prefix → word → substring. `users[]` is populated for **managers only**.
 
-### Locations (map POC)
+### Locations (floor-plan map)
 - `GET /locations` → `LocationOut[]` (`{ id, name, building, room, x, y, notes, item_count }`; x,y are 0..100 floor-plan coords).
 - `POST /locations` (editor+), `PATCH /locations/{id}` (editor+), `DELETE /locations/{id}` (manager).
+
+### Map buildings (editable floor-plan background)
+- `GET /map/buildings` (viewer+) → `MapBuildingOut[]` (`{ id, name, x, y, width, height, color, notes, sort_order }`;
+  x,y are the top-left corner, all four 0..100 so the plan is resolution-independent). Ordered by `sort_order, id`.
+- `POST /map/buildings` (editor+), `PATCH /map/buildings/{id}` (editor+), `DELETE /map/buildings/{id}` (manager).
+  `width`/`height` must be `> 0`.
 
 ### Graph
 - `GET /graph?root_id=` → `{ nodes:[{id,label,type,state,card_type}], edges:[{source,target}] }` (source=parent, target=child). Templates are excluded.

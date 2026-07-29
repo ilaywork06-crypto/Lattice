@@ -15,6 +15,7 @@ const emit = defineEmits<{
   select: [id: number]
   mapclick: [coords: { x: number; y: number }]
   'select-building': [id: number]
+  'deselect-building': []
   'building-draw': [rect: { x: number; y: number; width: number; height: number }]
   'building-change': [
     geo: { id: number; x: number; y: number; width: number; height: number },
@@ -138,6 +139,9 @@ function onUp(evt: PointerEvent) {
       emit('building-draw', {
         x: round1(r.x), y: round1(r.y), width: round1(r.width), height: round1(r.height),
       })
+    } else {
+      // A click (or a too-small smudge) on empty space clears the selection.
+      emit('deselect-building')
     }
     draft.value = null
   } else if (d.moved) {

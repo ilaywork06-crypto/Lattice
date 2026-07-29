@@ -129,7 +129,7 @@ uv run ruff check services packages                  # lint
 | §10 | Change log per item; manager log of changes on their linked items over day/week/month | `models.AuditLog`, `/audit`, `/audit/my-items?period=` |
 | §11 | Excel import (bulk) & export | `services/importexport.py`, `/data/{template,import,export}` |
 | §12 | Desiccator stock: quantities, breakdown by version & production date, per-serial for unique cards; **minimum-quantity alerts** (email + in-app to manager & editor) | `services/inventory.py`, `StockThreshold`, `/inventory/{cards,desiccator,thresholds,low-stock}` |
-| Extras | Hierarchy **graph** page, **map POC**, **dark/light** mode | `/graph`, `/locations` (x,y), frontend |
+| Extras | Hierarchy **graph** page, **editable floor-plan map** (draw/move/resize buildings behind the location markers), **dark/light** mode | `/graph`, `/locations` (x,y), `/map/buildings`, frontend |
 
 The full HTTP + event contract is in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 

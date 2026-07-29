@@ -37,7 +37,39 @@ def init_db() -> None:
         admin = _ensure_admin(db, settings)
         if settings.seed_demo_data and db.query(User).count() <= 1:
             _seed_demo(db, admin)
+        if settings.seed_demo_data:
+            _ensure_map_buildings(db)
         db.commit()
+
+
+# The floor-plan background is seeded on its own, not as part of `_seed_demo`:
+# that only runs on a virgin database, so databases created before the map
+# existed would otherwise be stuck with a blank plan forever.
+_DEFAULT_BUILDINGS = [
+    ("Lab A", 4, 6, 40, 38, "#5b6ef5"),
+    ("Assembly Hall", 48, 6, 48, 24, "#26a69a"),
+    ("Storage", 48, 34, 22, 26, "#e6a532"),
+    ("Desiccator Room", 74, 34, 22, 26, "#42a5f5"),
+    ("Lab B", 4, 48, 40, 46, "#7e57c2"),
+    ("Offices", 48, 64, 48, 30, "#8a8f9a"),
+]
+
+
+def _ensure_map_buildings(db: Session) -> None:
+    """Lay down the default floor-plan when there isn't one.
+
+    Guarded on the table being empty rather than per-name: a per-name check
+    would resurrect buildings the user deliberately deleted on every restart.
+    The trade-off is that emptying the plan completely re-seeds it next boot.
+    """
+    if db.query(MapBuilding).count():
+        return
+    db.add_all([
+        MapBuilding(name=n, x=x, y=y, width=w, height=h, color=c, sort_order=i)
+        for i, (n, x, y, w, h, c) in enumerate(_DEFAULT_BUILDINGS, start=1)
+    ])
+    db.flush()
+    logger.info("Seeded %d default floor-plan buildings", len(_DEFAULT_BUILDINGS))
 
 
 def _ensure_admin(db: Session, settings) -> User:
@@ -104,21 +136,6 @@ def _seed_demo(db: Session, admin: User) -> None:
         "storage": Location(name="Storage Room", building="B2", room="S1", x=80, y=80),
     }
     db.add_all(locs.values())
-    db.flush()
-
-    # ── floor-plan buildings (editable map background, 0..100 coords) ──
-    _buildings = [
-        ("Lab A", 4, 6, 40, 38, "#5b6ef5"),
-        ("Assembly Hall", 48, 6, 48, 24, "#26a69a"),
-        ("Storage", 48, 34, 22, 26, "#e6a532"),
-        ("Desiccator Room", 74, 34, 22, 26, "#42a5f5"),
-        ("Lab B", 4, 48, 40, 46, "#7e57c2"),
-        ("Offices", 48, 64, 48, 30, "#8a8f9a"),
-    ]
-    db.add_all([
-        MapBuilding(name=n, x=x, y=y, width=w, height=h, color=c, sort_order=i)
-        for i, (n, x, y, w, h, c) in enumerate(_buildings, start=1)
-    ])
     db.flush()
 
     def make(**kw):

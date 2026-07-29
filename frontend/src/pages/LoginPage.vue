@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { extractError } from '@/api/client'
+import BrandLogo from '@/components/BrandLogo.vue'
 import { ROLE_COLORS, ROLE_LABELS } from '@/constants'
 import type { UserRole } from '@/api/types'
 
@@ -70,9 +71,7 @@ async function submit() {
       <v-row justify="center" align="center">
         <v-col cols="12" sm="9" md="6" lg="4">
           <div class="text-center mb-6">
-            <v-avatar color="primary" size="64" rounded="lg" class="mb-3">
-              <span class="text-h4 font-weight-bold text-white">R</span>
-            </v-avatar>
+            <BrandLogo :size="72" class="mx-auto mb-3" />
             <h1 class="text-h4 font-weight-bold">Lattice</h1>
             <p class="text-body-2 text-medium-emphasis">{{ $t('login.brandSubtitle') }}</p>
           </div>

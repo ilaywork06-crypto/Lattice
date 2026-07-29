@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { itemsApi, locationsApi, mapApi } from '@/api/services'
@@ -19,6 +19,7 @@ const router = useRouter()
 const { t } = useI18n({ useScope: 'global' })
 
 const locations = ref<LocationOut[]>([])
+const buildings = ref<MapBuilding[]>([])
 const loading = ref(false)
 const selectedId = ref<number | null>(null)
 const selected = ref<LocationOut | null>(null)
@@ -43,6 +44,14 @@ async function load() {
     ui.error(e)
   } finally {
     loading.value = false
+  }
+}
+
+async function loadBuildings() {
+  try {
+    buildings.value = await mapApi.buildings()
+  } catch (e) {
+    ui.error(e)
   }
 }
 
@@ -75,10 +84,14 @@ const form = reactive<{
 function openCreate() {
   editing.value = null
   Object.assign(form, { name: '', building: '', room: '', x: 50, y: 50, notes: '' })
+  mapEdit.value = false // placing a marker and reshaping the plan are exclusive modes
+  picking.value = false
   dialog.value = true
 }
 function openEdit(loc: LocationOut) {
   editing.value = loc
+  mapEdit.value = false
+  picking.value = false
   Object.assign(form, {
     name: loc.name,
     building: loc.building ?? '',
@@ -89,11 +102,40 @@ function openEdit(loc: LocationOut) {
   })
   dialog.value = true
 }
+// ---- Picking coordinates off the plan -------------------------------------
+// The dialog is a modal: its scrim covers the viewport, so a click aimed at the
+// floor-plan would hit the scrim and merely dismiss the dialog. So picking is a
+// step of its own — the dialog steps aside, the plan takes one click, and the
+// dialog comes back with the coordinates filled in. Form state survives because
+// nothing resets it on close.
+const picking = ref(false)
+const planAnchor = ref<HTMLElement | null>(null)
+
+function startPicking() {
+  picking.value = true
+  dialog.value = false
+  // The dialog is often opened from the table far below; bring the plan into view.
+  nextTick(() => planAnchor.value?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+}
+
+function cancelPicking() {
+  picking.value = false
+  dialog.value = true
+}
+
 function onMapPlace(coords: { x: number; y: number }) {
-  if (!dialog.value) return
+  if (!picking.value) return
   form.x = coords.x
   form.y = coords.y
+  picking.value = false
+  dialog.value = true
 }
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && picking.value) cancelPicking()
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 async function save() {
   if (!form.name.trim()) {
@@ -145,7 +187,128 @@ async function confirmRemove() {
   }
 }
 
-onMounted(load)
+// ---- Map background: draw / move / resize buildings -----------------------
+// Geometry is edited directly on the plan (FloorPlanMap emits the new rect);
+// name / colour / notes are edited in the side panel.
+const BUILDING_PALETTE = [
+  '#5b6ef5', '#26a69a', '#e6a532', '#42a5f5', '#7e57c2', '#8a8f9a', '#e5484d', '#2e9e5b',
+]
+const DEFAULT_BUILDING_COLOR = BUILDING_PALETTE[0]
+
+const mapEdit = ref(false)
+const selectedBuildingId = ref<number | null>(null)
+const bSaving = ref(false)
+const removeBld = ref<MapBuilding | null>(null)
+const bForm = reactive({ name: '', color: DEFAULT_BUILDING_COLOR, notes: '' })
+
+const selectedBuilding = computed(
+  () => buildings.value.find((b) => b.id === selectedBuildingId.value) ?? null,
+)
+
+// Keyed on the id, not the object: dragging a building replaces its entry in
+// `buildings`, and that must not wipe a name the user is halfway through typing.
+watch(selectedBuildingId, () => {
+  const b = selectedBuilding.value
+  Object.assign(bForm, {
+    name: b?.name ?? '',
+    color: b?.color ?? DEFAULT_BUILDING_COLOR,
+    notes: b?.notes ?? '',
+  })
+})
+
+function toggleMapEdit() {
+  mapEdit.value = !mapEdit.value
+  if (mapEdit.value) {
+    dialog.value = false
+    picking.value = false
+  } else {
+    selectedBuildingId.value = null
+  }
+}
+
+async function onBuildingDraw(rect: { x: number; y: number; width: number; height: number }) {
+  bSaving.value = true
+  try {
+    const created = await mapApi.createBuilding({
+      name: t('bld.newName'),
+      ...rect,
+      color: BUILDING_PALETTE[buildings.value.length % BUILDING_PALETTE.length],
+      sort_order: buildings.value.length + 1,
+    })
+    buildings.value.push(created)
+    selectedBuildingId.value = created.id
+    ui.success(t('bld.created'))
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    bSaving.value = false
+  }
+}
+
+// Fires on every drag/resize release, so it saves optimistically and stays quiet.
+async function onBuildingChange(geo: {
+  id: number
+  x: number
+  y: number
+  width: number
+  height: number
+}) {
+  const idx = buildings.value.findIndex((b) => b.id === geo.id)
+  if (idx === -1) return
+  const previous = buildings.value[idx]
+  buildings.value[idx] = { ...previous, ...geo }
+  try {
+    const { id, ...body } = geo
+    buildings.value[idx] = await mapApi.updateBuilding(id, body)
+  } catch (e) {
+    buildings.value[idx] = previous
+    ui.error(e)
+  }
+}
+
+async function saveBuilding() {
+  const b = selectedBuilding.value
+  if (!b) return
+  if (!bForm.name.trim()) {
+    ui.warning(t('loc.nameRequired'))
+    return
+  }
+  bSaving.value = true
+  try {
+    const saved = await mapApi.updateBuilding(b.id, {
+      name: bForm.name.trim(),
+      color: bForm.color || null,
+      notes: bForm.notes.trim() || null,
+    })
+    const idx = buildings.value.findIndex((x) => x.id === b.id)
+    if (idx !== -1) buildings.value[idx] = saved
+    ui.success(t('bld.updated'))
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    bSaving.value = false
+  }
+}
+
+async function confirmRemoveBuilding() {
+  if (!removeBld.value) return
+  const id = removeBld.value.id
+  try {
+    await mapApi.removeBuilding(id)
+    buildings.value = buildings.value.filter((b) => b.id !== id)
+    if (selectedBuildingId.value === id) selectedBuildingId.value = null
+    ui.success(t('bld.deleted'))
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    removeBld.value = null
+  }
+}
+
+onMounted(() => {
+  load()
+  loadBuildings()
+})
 </script>
 
 <template>
@@ -157,6 +320,15 @@ onMounted(load)
     >
       <template #actions>
         <v-btn variant="tonal" icon="mdi-refresh" :loading="loading" @click="load" />
+        <v-btn
+          v-if="auth.canPropose"
+          :color="mapEdit ? 'secondary' : undefined"
+          :variant="mapEdit ? 'flat' : 'tonal'"
+          :prepend-icon="mapEdit ? 'mdi-check' : 'mdi-pencil-ruler'"
+          @click="toggleMapEdit"
+        >
+          {{ mapEdit ? $t('bld.doneEditing') : $t('bld.editMap') }}
+        </v-btn>
         <v-btn
           v-if="auth.canPropose"
           color="primary"
@@ -175,16 +347,35 @@ onMounted(load)
           <v-card-title class="d-flex align-center gap-2">
             <v-icon icon="mdi-floor-plan" color="primary" />
             <span class="text-subtitle-1 font-weight-bold">{{ $t('loc.floorPlan') }}</span>
+            <v-spacer />
+            <v-btn
+              v-if="picking"
+              size="small"
+              variant="text"
+              prepend-icon="mdi-close"
+              @click="cancelPicking"
+            >
+              {{ $t('loc.cancelPick') }}
+            </v-btn>
           </v-card-title>
           <v-divider />
           <v-card-text>
+            <div ref="planAnchor">
             <FloorPlanMap
               :locations="locations"
               :selected-id="selectedId"
-              :placing="dialog"
+              :placing="picking"
+              :buildings="buildings"
+              :editing="mapEdit"
+              :selected-building-id="selectedBuildingId"
               @select="selectLocation"
               @mapclick="onMapPlace"
+              @select-building="selectedBuildingId = $event"
+              @deselect-building="selectedBuildingId = null"
+              @building-draw="onBuildingDraw"
+              @building-change="onBuildingChange"
             />
+            </div>
             <div class="d-flex flex-wrap gap-4 mt-3 justify-center text-caption text-medium-emphasis">
               <span><v-icon icon="mdi-circle" color="#9aa0b4" size="12" /> {{ $t('loc.legendEmpty') }}</span>
               <span><v-icon icon="mdi-circle" color="#2e9e5b" size="12" /> {{ $t('loc.legend1') }}</span>
@@ -195,8 +386,109 @@ onMounted(load)
         </v-card>
       </v-col>
 
+      <!-- Map editor (edit mode) -->
+      <v-col v-if="mapEdit" cols="12" md="5">
+        <v-card variant="flat" border height="100%">
+          <v-card-title class="d-flex align-center gap-2">
+            <v-icon icon="mdi-pencil-ruler" color="secondary" />
+            <span class="text-subtitle-1 font-weight-bold">{{ $t('bld.editorTitle') }}</span>
+          </v-card-title>
+          <v-divider />
+          <v-card-text>
+            <v-alert type="info" variant="tonal" density="compact" class="mb-4">
+              {{ $t('bld.editorHint') }}
+            </v-alert>
+
+            <!-- Properties of the selected building -->
+            <template v-if="selectedBuilding">
+              <v-text-field
+                v-model="bForm.name"
+                :label="$t('bld.name')"
+                density="comfortable"
+                class="mb-2"
+              />
+              <div class="text-caption text-medium-emphasis mb-1">{{ $t('bld.color') }}</div>
+              <div class="d-flex flex-wrap gap-2 mb-4">
+                <button
+                  v-for="c in BUILDING_PALETTE"
+                  :key="c"
+                  type="button"
+                  class="swatch"
+                  :class="{ active: bForm.color === c }"
+                  :style="{ background: c }"
+                  :aria-label="c"
+                  @click="bForm.color = c"
+                />
+              </div>
+              <v-textarea
+                v-model="bForm.notes"
+                :label="$t('bld.notes')"
+                rows="2"
+                auto-grow
+                density="comfortable"
+              />
+              <div class="text-caption text-medium-emphasis">
+                {{ $t('bld.geometry') }}:
+                x {{ selectedBuilding.x }} · y {{ selectedBuilding.y }} ·
+                {{ selectedBuilding.width }} × {{ selectedBuilding.height }}
+              </div>
+              <div class="d-flex gap-2 mt-4">
+                <v-btn
+                  color="primary"
+                  variant="flat"
+                  :loading="bSaving"
+                  prepend-icon="mdi-content-save"
+                  @click="saveBuilding"
+                >
+                  {{ $t('common.save') }}
+                </v-btn>
+                <v-spacer />
+                <v-btn
+                  v-if="auth.canDirectEdit"
+                  color="error"
+                  variant="text"
+                  prepend-icon="mdi-delete-outline"
+                  @click="removeBld = selectedBuilding"
+                >
+                  {{ $t('common.delete') }}
+                </v-btn>
+              </div>
+            </template>
+            <EmptyState
+              v-else
+              icon="mdi-vector-square"
+              :title="$t('bld.nothingSelected')"
+              :text="$t('bld.nothingSelectedHint')"
+            />
+          </v-card-text>
+
+          <v-divider />
+          <v-list-subheader class="text-uppercase text-caption font-weight-bold">
+            {{ $t('bld.buildings', { n: buildings.length }) }}
+          </v-list-subheader>
+          <v-list v-if="buildings.length" density="compact" nav class="py-0">
+            <v-list-item
+              v-for="b in buildings"
+              :key="b.id"
+              :active="b.id === selectedBuildingId"
+              rounded="lg"
+              class="mx-2"
+              @click="selectedBuildingId = b.id"
+            >
+              <template #prepend>
+                <span class="swatch sm me-3" :style="{ background: b.color || DEFAULT_BUILDING_COLOR }" />
+              </template>
+              <v-list-item-title>{{ b.name }}</v-list-item-title>
+            </v-list-item>
+          </v-list>
+          <div v-else class="px-4 pb-4 text-caption text-medium-emphasis">
+            {{ $t('bld.noBuildings') }}
+          </div>
+        </v-card>
+      </v-col>
+
       <!-- Selected location items -->
-      <v-col cols="12" md="5">
+      <v-col v-else cols="12" md="5">
         <v-card variant="flat" border height="100%">
           <template v-if="selected">
             <v-card-title class="d-flex align-center gap-2">
@@ -293,12 +585,23 @@ onMounted(load)
             <v-col cols="6"><v-text-field v-model="form.building" :label="$t('loc.building')" /></v-col>
             <v-col cols="6"><v-text-field v-model="form.room" :label="$t('loc.room')" /></v-col>
           </v-row>
-          <v-row dense>
-            <v-col cols="6">
+          <v-row dense align="center">
+            <v-col cols="4">
               <v-text-field v-model.number="form.x" label="X (0–100)" type="number" min="0" max="100" />
             </v-col>
-            <v-col cols="6">
+            <v-col cols="4">
               <v-text-field v-model.number="form.y" label="Y (0–100)" type="number" min="0" max="100" />
+            </v-col>
+            <v-col cols="4">
+              <v-btn
+                variant="tonal"
+                color="primary"
+                block
+                prepend-icon="mdi-crosshairs-gps"
+                @click="startPicking"
+              >
+                {{ $t('loc.pickOnMap') }}
+              </v-btn>
             </v-col>
           </v-row>
           <v-alert type="info" variant="tonal" density="compact" class="mb-3">
@@ -325,5 +628,34 @@ onMounted(load)
       @update:model-value="(v) => !v && (removeLoc = null)"
       @confirm="confirmRemove"
     />
+
+    <ConfirmDialog
+      :model-value="removeBld !== null"
+      :title="$t('bld.deleteTitle')"
+      :message="removeBld ? $t('bld.deleteMsg', { name: removeBld.name }) : ''"
+      :confirm-text="$t('common.delete')"
+      @update:model-value="(v) => !v && (removeBld = null)"
+      @confirm="confirmRemoveBuilding"
+    />
   </v-container>
 </template>
+
+<style scoped>
+.swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.35) inset;
+  cursor: pointer;
+}
+.swatch.active {
+  border-color: rgb(var(--v-theme-on-surface));
+}
+.swatch.sm {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  cursor: default;
+}
+</style>

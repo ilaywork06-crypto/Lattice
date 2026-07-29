@@ -310,6 +310,7 @@ export default {
 
   map: {
     placingHint: 'Click on the plan to set coordinates',
+    editHint: 'Drag on empty space to draw · drag a building to move · corners to resize',
     rooms: {
       labA: 'Lab A',
       assemblyHall: 'Assembly Hall',
@@ -461,7 +462,9 @@ export default {
     nameReq: 'Name *',
     building: 'Building',
     room: 'Room',
-    tip: 'Tip: with this dialog open, click anywhere on the floor-plan to drop the marker.',
+    tip: 'Tip: hit “Pick on map” and then click the floor-plan to set X and Y.',
+    pickOnMap: 'Pick on map',
+    cancelPick: 'Cancel picking',
     notes: 'Notes',
     nameRequired: 'Name is required',
     updated: 'Location updated',
@@ -469,6 +472,28 @@ export default {
     deleted: 'Location deleted',
     deleteTitle: 'Delete location?',
     deleteMsg: 'Remove {name}.',
+  },
+
+  bld: {
+    editMap: 'Edit map',
+    doneEditing: 'Done editing',
+    editorTitle: 'Map editor',
+    editorHint:
+      'Drag a rectangle on an empty part of the plan to add a building. Click one to select it, drag it to move, and use the corner handles to resize.',
+    buildings: 'Buildings ({n})',
+    nothingSelected: 'No building selected',
+    nothingSelectedHint: 'Pick a building from the plan or the list to rename or recolour it.',
+    newName: 'New building',
+    name: 'Name *',
+    color: 'Colour',
+    notes: 'Notes',
+    geometry: 'Position & size',
+    noBuildings: 'No buildings drawn yet',
+    created: 'Building added',
+    updated: 'Building updated',
+    deleted: 'Building deleted',
+    deleteTitle: 'Delete building?',
+    deleteMsg: 'Remove {name} from the floor-plan. Location markers are not affected.',
   },
 
   graph: {

@@ -342,3 +342,25 @@ def test_map_buildings_crud_and_permissions(client, admin, editor, viewer):
     # only managers may delete
     assert client.delete(f"/map/buildings/{bid}", headers=editor).status_code == 403
     assert client.delete(f"/map/buildings/{bid}", headers=admin).status_code == 204
+
+
+def test_default_floor_plan_backfills_into_an_already_seeded_db():
+    """The demo seed only runs on a virgin DB, so the floor-plan must be able to
+    land on a database that was created before the map existed."""
+    from lattice_core.database import SessionLocal
+    from lattice_core.models import MapBuilding
+    from lattice_core.seed import _ensure_map_buildings
+
+    with SessionLocal() as db:
+        db.query(MapBuilding).delete()  # simulate a pre-map database
+        db.commit()
+        assert db.query(MapBuilding).count() == 0
+
+        _ensure_map_buildings(db)
+        db.commit()
+        assert db.query(MapBuilding).count() == 6
+
+        # ...and it must not duplicate them on the next boot
+        _ensure_map_buildings(db)
+        db.commit()
+        assert db.query(MapBuilding).count() == 6

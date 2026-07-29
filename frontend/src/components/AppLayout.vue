@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { useLocaleStore } from '@/stores/locale'
 import { useNotificationsStore } from '@/stores/notifications'
+import BrandLogo from '@/components/BrandLogo.vue'
 import GlobalSearch from '@/components/GlobalSearch.vue'
 import { ROLE_COLORS, ROLE_LABELS } from '@/constants'
 import type { UserRole } from '@/api/types'
@@ -96,9 +97,7 @@ function toggleDrawer() {
     expand-on-hover
   >
     <div class="d-flex align-center pa-4" style="min-height: 64px">
-      <v-avatar color="primary" size="38" rounded="lg" class="flex-shrink-0">
-        <v-icon icon="mdi-hexagon-multiple" size="22" color="white" />
-      </v-avatar>
+      <BrandLogo :size="38" />
       <div v-if="!rail" class="ms-3 overflow-hidden">
         <div class="text-h6 font-weight-bold" style="line-height: 1.1">Lattice</div>
         <div class="text-caption text-medium-emphasis">{{ $t('common.tagline') }}</div>
@@ -127,7 +126,8 @@ function toggleDrawer() {
 
   <v-app-bar flat color="surface" border="b">
     <v-app-bar-nav-icon @click="toggleDrawer" />
-    <v-toolbar-title class="font-weight-bold flex-grow-0 me-4">Lattice</v-toolbar-title>
+    <BrandLogo :size="26" class="ms-1" />
+    <v-toolbar-title class="font-weight-bold flex-grow-0 ms-2 me-4">Lattice</v-toolbar-title>
 
     <!-- Global search activator -->
     <v-btn
