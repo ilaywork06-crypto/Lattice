@@ -2,8 +2,9 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from lattice_shared.logging import configure_logging
 
 from lattice_core.config import get_settings
@@ -22,6 +23,7 @@ from lattice_core.routers import (
     users,
 )
 from lattice_core.seed import init_db
+from lattice_core.services.items import DomainError
 
 logger = configure_logging("lattice_core")
 settings = get_settings()
@@ -41,6 +43,18 @@ app = FastAPI(
     description="Hierarchical hardware asset tracking: setups, assemblies and cards.",
     lifespan=lifespan,
 )
+
+@app.exception_handler(DomainError)
+async def domain_error_handler(_: Request, exc: DomainError):
+    """A broken domain rule is the caller's fault, not a server fault.
+
+    Routes used to each remember their own `except DomainError` — and the ones
+    that forgot (PATCH /items among them) turned a perfectly good explanation
+    like "'X' is not a known project" into a bare 500. Handling it centrally
+    means a new route cannot regress this again.
+    """
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 
 app.add_middleware(
     CORSMiddleware,

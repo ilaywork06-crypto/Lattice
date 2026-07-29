@@ -166,6 +166,15 @@ _MUTABLE_FIELDS = {
 
 def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
     manager_ids = data.pop("manager_ids", None)
+    # Deliberately *not* a member of _MUTABLE_FIELDS: a location change is a
+    # move, and §3 requires it to cascade to every descendant. Writing the
+    # column here would strand an assembly's cards at the old location, so it
+    # is handed to move_item below — the one place that owns the cascade rule.
+    new_location_id = data.pop("location_id", None)
+    # Same story for state: it owns state history and the faulty-note rule, so
+    # it goes through change_state rather than being written as a plain column.
+    new_state = data.pop("state", None)
+    state_note = data.pop("state_note", None)
     changed: dict[str, list] = {}
 
     for field, value in data.items():
@@ -190,8 +199,15 @@ def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
         _check_unique_serial(db, item)
 
     if manager_ids is not None:
-        item.managers = db.query(User).filter(User.id.in_(manager_ids)).all()
-        changed["manager_ids"] = [None, manager_ids]
+        # Compare before writing. The edit form always sends `manager_ids`, so an
+        # unconditional assignment logged "Updated … (manager_ids)" on *every*
+        # save — burying real history under identical no-op entries (§10) — and
+        # recorded the old value as a useless `None`.
+        before = sorted(m.id for m in item.managers)
+        after = sorted(set(manager_ids))
+        if before != after:
+            item.managers = db.query(User).filter(User.id.in_(after)).all()
+            changed["manager_ids"] = [before, after]
 
     if changed:
         record_audit(
@@ -202,6 +218,15 @@ def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
             user=user,
             details={"changed": changed},
         )
+
+    # Last, so a catalog/serial rejection above aborts the whole edit rather
+    # than leaving a move behind. `None` means "not supplied" here, matching how
+    # every other field in this function treats it.
+    if new_state is not None:
+        change_state(db, item, new_state, state_note, user)
+    if new_location_id is not None and new_location_id != item.location_id:
+        move_item(db, item, new_location_id, user)
+
     return item
 
 

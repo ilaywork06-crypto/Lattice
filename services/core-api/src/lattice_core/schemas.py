@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import enum
 from datetime import date, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
 from lattice_core.models import (
     CardType,
@@ -17,6 +18,27 @@ from lattice_core.models import (
     StorageStatus,
     UserRole,
 )
+
+BCRYPT_MAX_BYTES = 72
+
+
+def _within_bcrypt_limit(value: str) -> str:
+    """bcrypt refuses anything over 72 *bytes* and raises, which surfaced as a 500.
+
+    Bytes, not characters: UTF-8 makes Hebrew two bytes apiece, so a 40-character
+    passphrase can already be over the line. Checked here so the caller gets a
+    422 that explains itself.
+    """
+    encoded = len(value.encode("utf-8"))
+    if encoded > BCRYPT_MAX_BYTES:
+        raise ValueError(
+            f"Password is too long for bcrypt: {encoded} bytes, maximum is "
+            f"{BCRYPT_MAX_BYTES} (non-Latin characters use 2–4 bytes each)."
+        )
+    return value
+
+
+Password = Annotated[str, Field(min_length=6), AfterValidator(_within_bcrypt_limit)]
 
 
 # ─────────────────────────── Auth / users ───────────────────────────
@@ -44,7 +66,7 @@ class UserOut(UserBrief):
 class UserCreate(BaseModel):
     email: EmailStr
     full_name: str
-    password: str = Field(min_length=6)
+    password: Password
     role: UserRole = UserRole.viewer
 
 
@@ -52,7 +74,7 @@ class UserUpdate(BaseModel):
     full_name: str | None = None
     role: UserRole | None = None
     is_active: bool | None = None
-    password: str | None = Field(default=None, min_length=6)
+    password: Password | None = None
 
 
 # ─────────────────────────── Locations ───────────────────────────
@@ -236,6 +258,11 @@ class ItemUpdate(BaseModel):
     version: str | None = None
     serial: str | None = None
     storage_status: StorageStatus | None = None
+    location_id: int | None = None
+    state: ItemState | None = None
+    # Carries the explanation the faulty-transition rule demands, so the edit
+    # form can change state without a second round-trip through StateDialog.
+    state_note: str | None = None
     manager_ids: list[int] | None = None
 
 

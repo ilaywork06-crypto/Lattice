@@ -563,6 +563,7 @@ export default {
   },
 
   itemForm: {
+    stateNoteHint: 'Recorded in the item\'s state history.',
     newOf: 'New {type}',
     editOf: 'Edit {name}',
     duplicateOf: 'Duplicate of {name}',
@@ -632,6 +633,7 @@ export default {
   },
 
   detail: {
+    backTo: 'Back to {target}',
     edit: 'Edit',
     proposeEdit: 'Propose edit',
     unlinkFromParent: 'Unlink from parent',

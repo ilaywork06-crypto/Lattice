@@ -40,6 +40,32 @@ const auth = useAuthStore()
 const ui = useUiStore()
 const { t } = useI18n({ useScope: 'global' })
 
+// Where "back" goes.
+//
+// History is the wrong tool for this button. The item page is reachable from the
+// dashboard, global search, the graph, a notification link and a plain bookmark,
+// and `router.back()` honours none of that: from a freshly opened tab it walks
+// out of the app entirely (verified: it lands on about:blank), and with no entry
+// to pop it does nothing at all — the button just looks broken. A destination
+// derived from the item is correct from every entry point and never dead.
+const LIST_ROUTE: Record<ItemOut['type'], { to: string; label: string }> = {
+  setup: { to: '/setups', label: 'nav.setups' },
+  assembly: { to: '/assemblies', label: 'nav.assemblies' },
+  card: { to: '/cards', label: 'nav.cards' },
+}
+
+const backTarget = computed(() => {
+  const it = item.value
+  if (!it) return { to: '/', label: t('nav.dashboard') }
+  if (it.is_template) return { to: '/templates', label: t('nav.templates') }
+  const r = LIST_ROUTE[it.type]
+  return { to: r.to, label: t(r.label) }
+})
+
+function goBack() {
+  router.push(backTarget.value.to)
+}
+
 const itemId = computed(() => Number(route.params.id))
 const item = ref<ItemOut | null>(null)
 const loading = ref(true)
@@ -289,10 +315,13 @@ async function onDeleteConfirm() {
   if (auth.canDirectEdit) {
     actionLoading.value = true
     try {
+      const target = backTarget.value.to
       await itemsApi.remove(item.value.id)
       ui.success(t('detail.deleted'))
       deleteOpen.value = false
-      router.back()
+      // replace, not push/back: the deleted item's URL must not stay reachable
+      // through the Forward button, where it would 404.
+      router.replace(target)
     } catch (e) {
       actionError.value = extractError(e)
     } finally {
@@ -529,8 +558,8 @@ onMounted(loadItem)
 
 <template>
   <v-container fluid class="pa-4 pa-md-6">
-    <v-btn variant="text" prepend-icon="mdi-arrow-left" class="mb-3 flip-rtl-icon" @click="router.back()">
-      {{ $t('common.back') }}
+    <v-btn variant="text" prepend-icon="mdi-arrow-left" class="mb-3 flip-rtl-icon" @click="goBack">
+      {{ $t('detail.backTo', { target: backTarget.label }) }}
     </v-btn>
 
     <v-skeleton-loader v-if="loading" type="article, list-item-three-line@3" />

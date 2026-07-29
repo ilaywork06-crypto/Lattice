@@ -258,9 +258,16 @@ async function runBulk() {
   }
 }
 
-const bulkStateNoteRequired = computed(
-  () => bulkMode.value === 'state' && bulkState.value === 'faulty',
-)
+// The server demands an explanation for transitions into *or out of* faulty, so
+// checking only the target state let a batch of currently-faulty items through
+// to a guaranteed 400. The selected rows carry their state, so ask up front.
+const bulkStateNoteRequired = computed(() => {
+  if (bulkMode.value !== 'state' || bulkState.value === null) return false
+  if (bulkState.value === 'faulty') return true
+  return items.value.some(
+    (i) => selected.value.includes(i.id) && i.state === 'faulty',
+  )
+})
 const bulkConfirmDisabled = computed(() => {
   if (bulkMode.value === 'move') return bulkLocationId.value == null
   if (bulkMode.value === 'state') return bulkState.value == null || (bulkStateNoteRequired.value && !bulkNote.value.trim())

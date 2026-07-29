@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC
 
 from lattice_shared.events import Event, EventType, Recipient
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from lattice_core.events import publish_event
@@ -96,6 +97,37 @@ async def notify_submission(db: Session, cr: ChangeRequest, item: Item | None) -
 
 # ─────────────────────────── apply on approval ───────────────────────────
 def apply_change_request(db: Session, cr: ChangeRequest, reviewer: User) -> None:
+    """Execute an approved proposal.
+
+    `payload` is a free-form JSON blob chosen by the proposer, so it can be
+    missing keys or hold the wrong types. Anything it gets wrong is the
+    proposal's fault, not the server's — `_apply` raises whatever it likes and
+    this wrapper turns it into a DomainError, i.e. a 400 the reviewing manager
+    can actually read, instead of a 500.
+    """
+    try:
+        _apply(db, cr, reviewer)
+    except item_svc.DomainError:
+        raise
+    except (ValidationError, KeyError, TypeError, ValueError) as exc:
+        raise item_svc.DomainError(
+            f"This proposal's details are not valid for a '{cr.action.value}' change "
+            f"({_describe(exc)}). Reject it and ask for a corrected one."
+        ) from exc
+
+
+def _describe(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        return "; ".join(
+            f"{'.'.join(str(p) for p in e['loc']) or 'payload'}: {e['msg']}"
+            for e in exc.errors()[:3]
+        )
+    if isinstance(exc, KeyError):
+        return f"missing '{exc.args[0]}'"
+    return str(exc)
+
+
+def _apply(db: Session, cr: ChangeRequest, reviewer: User) -> None:
     action = cr.action
     payload = cr.payload or {}
 

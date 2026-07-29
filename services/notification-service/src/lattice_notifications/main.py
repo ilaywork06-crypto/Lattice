@@ -7,7 +7,7 @@ import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from lattice_shared.logging import configure_logging
 from pydantic import BaseModel, ConfigDict
@@ -82,7 +82,7 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 @router.get("", response_model=list[NotificationOut])
 def list_notifications(
     unread_only: bool = False,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):

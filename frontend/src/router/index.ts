@@ -93,6 +93,15 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'nav.changeRequests', icon: 'mdi-file-swap-outline', group: 'Operations' },
   },
   {
+    // Every change-request notification — in-app *and* the email — links to
+    // `/change-requests/{id}` (see services/change_requests.py). Without this
+    // route those links fell through to the catch-all and showed a 404.
+    path: '/change-requests/:id',
+    name: 'change-request-detail',
+    component: () => import('@/pages/ChangeRequestsPage.vue'),
+    meta: { title: 'nav.changeRequests', hideInNav: true },
+  },
+  {
     path: '/notifications',
     name: 'notifications',
     component: () => import('@/pages/NotificationsPage.vue'),

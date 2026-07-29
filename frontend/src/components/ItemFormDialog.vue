@@ -92,6 +92,7 @@ interface FormModel {
   storage_status: StorageStatus | null
   manager_ids: number[]
   child_ids: number[]
+  state_note: string
 }
 
 function emptyModel(): FormModel {
@@ -114,6 +115,7 @@ function emptyModel(): FormModel {
     storage_status: null,
     manager_ids: [],
     child_ids: [],
+    state_note: '',
   }
 }
 
@@ -189,8 +191,21 @@ async function loadReferences() {
   }
 }
 
+// Where the item's state stood when the dialog opened. A state change from the
+// edit form goes through the same faulty-note rule as the dedicated dialog, so
+// we need the original to know whether a note is owed.
+const originalState = ref<ItemState | null>(null)
+
+const stateChanged = computed(
+  () => props.mode === 'edit' && originalState.value !== null && form.state !== originalState.value,
+)
+const stateNoteRequired = computed(
+  () => stateChanged.value && (form.state === 'faulty' || originalState.value === 'faulty'),
+)
+
 function hydrate() {
   Object.assign(form, emptyModel())
+  originalState.value = props.mode === 'edit' && props.item ? props.item.state : null
   if (props.mode === 'edit' && props.item) {
     const it = props.item
     Object.assign(form, {
@@ -248,6 +263,11 @@ watch(
 )
 
 const nameRules = [(v: string) => !!v?.trim() || t('itemForm.nameRequired')]
+// Mirrors the server rule, so the user is told before the round-trip instead of
+// bouncing off a 400.
+const stateNoteRules = [
+  (v: string) => !stateNoteRequired.value || !!v?.trim() || t('dlg.state.noteError'),
+]
 
 function buildPayload(): ItemCreate | ItemUpdate {
   const clean = (s: string) => (s.trim() === '' ? null : s.trim())
@@ -261,6 +281,11 @@ function buildPayload(): ItemCreate | ItemUpdate {
     dmz: clean(form.dmz),
     location_id: form.location_id,
     manager_ids: form.manager_ids,
+  }
+  // Only send a note when the state actually moved — an unchanged state must
+  // not attach a stray note to the item's history.
+  if (props.mode === 'edit' && stateChanged.value && form.state_note.trim()) {
+    base.state_note = form.state_note.trim()
   }
   if (isCard.value) {
     base.card_type = form.card_type
@@ -336,6 +361,20 @@ const dialogTitle = computed(() => {
                 v-model="form.state"
                 :label="$t('fields.state')"
                 :items="ITEM_STATES.map((s) => ({ title: STATE_LABELS[s], value: s }))"
+              />
+            </v-col>
+            <!-- Transitions into or out of "faulty" must be explained (§5/§6/§7). -->
+            <v-col v-if="stateChanged" cols="12">
+              <v-textarea
+                v-model="form.state_note"
+                :label="stateNoteRequired ? $t('dlg.noteRequired') : $t('dlg.noteOptional')"
+                :rules="stateNoteRules"
+                rows="2"
+                auto-grow
+                density="comfortable"
+                prepend-inner-icon="mdi-swap-horizontal"
+                :hint="$t('itemForm.stateNoteHint')"
+                persistent-hint
               />
             </v-col>
 

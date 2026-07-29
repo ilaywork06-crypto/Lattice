@@ -37,8 +37,14 @@ def desiccator(
     db: Session = Depends(get_db),
     _: User = Depends(require_viewer),
 ):
-    """Grouped card stock — each group reports its desiccator/in-use/assembled split."""
-    return [g for g in svc.card_groups(db, card_type) if g.desiccator > 0 or g.total > 0]
+    """Only the groups actually holding stock in the desiccator (§12).
+
+    The condition used to be `g.desiccator > 0 or g.total > 0`; a group only
+    exists when it has at least one card, so `total > 0` was always true and the
+    whole filter passed everything through — making this endpoint a duplicate of
+    /inventory/cards and the UI's All/Desiccator toggle do nothing.
+    """
+    return [g for g in svc.card_groups(db, card_type) if g.desiccator > 0]
 
 
 @router.get("/thresholds", response_model=list[ThresholdOut])

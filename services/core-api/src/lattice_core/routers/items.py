@@ -66,8 +66,8 @@ def list_items(
     unassigned: bool | None = Query(None, description="Only items without a parent"),
     templates: bool = Query(False, description="Return templates instead of live items"),
     search: str | None = None,
-    limit: int = Query(200, le=1000),
-    offset: int = 0,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     q = db.query(Item).options(
         joinedload(Item.location),
@@ -93,8 +93,15 @@ def list_items(
     if unassigned:
         q = q.filter(Item.parent_id.is_(None))
     if search:
-        like = f"%{search}%"
-        q = q.filter(or_(Item.name.ilike(like), Item.serial.ilike(like)))
+        # Escape LIKE wildcards so a literal % or _ in the box doesn't match rows
+        # it shouldn't (see routers/search.py:_like).
+        like = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        q = q.filter(
+            or_(
+                Item.name.ilike(like, escape="\\"),
+                Item.serial.ilike(like, escape="\\"),
+            )
+        )
 
     items = q.order_by(Item.type, Item.name).offset(offset).limit(limit).all()
     return [

@@ -562,6 +562,7 @@ export default {
   },
 
   itemForm: {
+    stateNoteHint: 'יירשם בהיסטוריית המצבים של הפריט.',
     newOf: '{type} חדש',
     editOf: 'עריכת {name}',
     duplicateOf: 'שכפול של {name}',
@@ -631,6 +632,7 @@ export default {
   },
 
   detail: {
+    backTo: 'חזרה ל{target}',
     edit: 'עריכה',
     proposeEdit: 'הצעת עריכה',
     unlinkFromParent: 'ביטול קישור מהאב',

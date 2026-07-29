@@ -18,7 +18,7 @@ _PERIODS = {"day": 1, "week": 7, "month": 30}
 @router.get("", response_model=list[AuditOut])
 def list_audit(
     item_id: int | None = None,
-    limit: int = Query(200, le=1000),
+    limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
     _: User = Depends(require_viewer),
 ):

@@ -126,7 +126,6 @@ export interface DocumentOut {
   name: string
   url: string | null
   doc_type: string | null
-  created_at?: string
 }
 
 export interface ExtraItemOut {
@@ -135,7 +134,6 @@ export interface ExtraItemOut {
   company_part_number: string | null
   serial: string | null
   signed_by: string | null
-  created_at?: string
 }
 
 export interface ItemOut {
@@ -192,7 +190,11 @@ export interface ItemCreate {
   child_ids?: number[]
 }
 
-export type ItemUpdate = Partial<Omit<ItemCreate, 'type'>>
+export type ItemUpdate = Partial<Omit<ItemCreate, 'type'>> & {
+  /** Explains a state transition. Required when moving into or out of `faulty`;
+   *  update-only, since creating an item sets an initial state, not a transition. */
+  state_note?: string | null
+}
 
 export interface ItemQuery {
   type?: ItemType

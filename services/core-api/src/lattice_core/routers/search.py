@@ -22,6 +22,17 @@ _LOC_LIMIT = 8
 _USER_LIMIT = 8
 
 
+def _like(term: str) -> str:
+    """Build a LIKE pattern that treats the user's text as literal.
+
+    `%` and `_` are LIKE wildcards, so an unescaped search for "%" matched every
+    row in the system and "a_b" quietly matched "axb". Escaping them (backslash
+    first, so it isn't doubled) makes the box search for what was typed.
+    """
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _score(q: str, *fields: str | None) -> int:
     """Higher is better: exact > prefix > word-boundary > substring."""
     best = 0
@@ -43,13 +54,13 @@ def _score(q: str, *fields: str | None) -> int:
 @router.get("", response_model=SearchResults)
 def search(
     q: str = Query(min_length=1),
-    limit: int = Query(20, le=50),
+    limit: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db),
     user: User = Depends(require_viewer),
 ):
     term = q.strip()
     ql = term.lower()
-    like = f"%{term}%"
+    like = _like(term)
 
     # ── items ──
     item_rows = (
@@ -58,14 +69,14 @@ def search(
         .filter(Item.is_template.is_(False))
         .filter(
             or_(
-                Item.name.ilike(like),
-                Item.serial.ilike(like),
-                Item.version.ilike(like),
-                Item.project.ilike(like),
-                Item.industry.ilike(like),
-                Item.team.ilike(like),
-                Item.description.ilike(like),
-                Item.dmz.ilike(like),
+                Item.name.ilike(like, escape="\\"),
+                Item.serial.ilike(like, escape="\\"),
+                Item.version.ilike(like, escape="\\"),
+                Item.project.ilike(like, escape="\\"),
+                Item.industry.ilike(like, escape="\\"),
+                Item.team.ilike(like, escape="\\"),
+                Item.description.ilike(like, escape="\\"),
+                Item.dmz.ilike(like, escape="\\"),
             )
         )
         .limit(200)
@@ -106,9 +117,9 @@ def search(
         db.query(Location)
         .filter(
             or_(
-                Location.name.ilike(like),
-                Location.building.ilike(like),
-                Location.room.ilike(like),
+                Location.name.ilike(like, escape="\\"),
+                Location.building.ilike(like, escape="\\"),
+                Location.room.ilike(like, escape="\\"),
             )
         )
         .limit(80)
@@ -135,7 +146,12 @@ def search(
     if user.role == UserRole.manager:
         user_rows = (
             db.query(User)
-            .filter(or_(User.full_name.ilike(like), User.email.ilike(like)))
+            .filter(
+                or_(
+                    User.full_name.ilike(like, escape="\\"),
+                    User.email.ilike(like, escape="\\"),
+                )
+            )
             .limit(80)
             .all()
         )

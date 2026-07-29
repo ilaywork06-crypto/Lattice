@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { changeRequestsApi } from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -19,6 +19,7 @@ import type { ChangeRequestOut, ChangeStatus } from '@/api/types'
 
 const auth = useAuthStore()
 const ui = useUiStore()
+const route = useRoute()
 const router = useRouter()
 const { t } = useI18n({ useScope: 'global' })
 
@@ -62,6 +63,32 @@ function openDetail(cr: ChangeRequestOut) {
   detailOpen.value = true
 }
 
+// Deep link from a notification: /change-requests/:id opens that request.
+// Fetched directly rather than searched for in `requests`, because the current
+// filters (or the "mine only" default for non-managers) may exclude it.
+async function openFromRoute(id: number) {
+  const known = requests.value.find((r) => r.id === id)
+  if (known) return openDetail(known)
+  try {
+    openDetail(await changeRequestsApi.get(id))
+  } catch (e) {
+    ui.error(e)
+  }
+}
+
+watch(
+  () => route.params.id,
+  (id) => {
+    if (id) void openFromRoute(Number(id))
+  },
+)
+
+// Closing the dialog drops back to the plain list so the URL stops pointing at
+// a request that is no longer on screen.
+watch(detailOpen, (open) => {
+  if (!open && route.params.id) router.replace('/change-requests')
+})
+
 const payloadRows = computed(() => {
   if (!selected.value) return []
   return Object.entries(selected.value.payload || {})
@@ -94,7 +121,10 @@ async function review(action: 'approve' | 'reject') {
 
 const pendingCount = computed(() => requests.value.filter((r) => r.status === 'pending').length)
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  if (route.params.id) await openFromRoute(Number(route.params.id))
+})
 </script>
 
 <template>
