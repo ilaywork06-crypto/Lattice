@@ -28,6 +28,21 @@ def _serialize(db: Session, loc: Location) -> LocationOut:
     )
 
 
+def _check_unique_name(db: Session, name: str, exclude_id: int | None = None) -> None:
+    """Two locations with the same name are indistinguishable in every picker."""
+    clash = (
+        db.query(Location)
+        .filter(func.lower(func.trim(Location.name)) == name.strip().lower())
+        .filter(Location.id != (exclude_id or -1))
+        .first()
+    )
+    if clash:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A location named '{clash.name}' already exists (#{clash.id})",
+        )
+
+
 @router.get("", response_model=list[LocationOut])
 def list_locations(db: Session = Depends(get_db), _: User = Depends(require_viewer)):
     return [_serialize(db, loc) for loc in db.query(Location).order_by(Location.name).all()]
@@ -39,7 +54,9 @@ def create_location(
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
+    _check_unique_name(db, data.name)
     loc = Location(**data.model_dump())
+    loc.name = loc.name.strip()
     db.add(loc)
     db.commit()
     db.refresh(loc)
@@ -56,8 +73,10 @@ def update_location(
     loc = db.get(Location, location_id)
     if loc is None:
         raise HTTPException(status_code=404, detail="Location not found")
+    _check_unique_name(db, data.name, exclude_id=location_id)
     for k, v in data.model_dump().items():
         setattr(loc, k, v)
+    loc.name = loc.name.strip()
     db.commit()
     db.refresh(loc)
     return _serialize(db, loc)

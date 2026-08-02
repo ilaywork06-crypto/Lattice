@@ -6,8 +6,8 @@ import { useNotificationsStore } from '@/stores/notifications'
 import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import { timeAgo } from '@/constants'
-import type { NotificationItem } from '@/api/types'
+import { CARD_TYPE_LABELS, timeAgo } from '@/constants'
+import type { LowStockComponent, NotificationItem } from '@/api/types'
 
 const store = useNotificationsStore()
 const ui = useUiStore()
@@ -26,6 +26,12 @@ const typeMeta: Record<string, { icon: string; color: string }> = {
 
 function meta(type: string) {
   return typeMeta[type] ?? { icon: 'mdi-bell-outline', color: 'primary' }
+}
+
+/** The structured component list a low-stock alert carries, if it has one.
+ *  Older notifications predate the payload and still render as plain text. */
+function components(n: NotificationItem): LowStockComponent[] {
+  return n.payload?.components ?? []
 }
 
 const shown = computed(() =>
@@ -113,7 +119,36 @@ onMounted(refresh)
               </v-badge>
             </template>
             <v-list-item-title class="font-weight-medium">{{ n.title }}</v-list-item-title>
-            <v-list-item-subtitle>{{ n.body }}</v-list-item-subtitle>
+            <!-- A low-stock alert carries its components as data, so it renders
+                 as the list of what is actually short rather than a paragraph
+                 the reader has to parse. -->
+            <template v-if="components(n).length">
+              <div class="low-stock-list mt-2 mb-1">
+                <div
+                  v-for="c in components(n)"
+                  :key="c.threshold_id ?? c.name"
+                  class="low-stock-row"
+                >
+                  <v-icon icon="mdi-memory" size="16" class="me-2 text-medium-emphasis" />
+                  <span class="font-weight-medium">{{ c.name }}</span>
+                  <span v-if="c.version" class="text-medium-emphasis ms-1">v{{ c.version }}</span>
+                  <v-chip size="x-small" variant="tonal" class="ms-2">
+                    {{ CARD_TYPE_LABELS[c.card_type] }}
+                  </v-chip>
+                  <v-spacer />
+                  <span class="text-error font-weight-bold">{{ c.current_quantity }}</span>
+                  <span class="text-medium-emphasis mx-1">/</span>
+                  <span class="text-medium-emphasis">{{ c.min_quantity }}</span>
+                  <v-chip size="x-small" color="warning" variant="tonal" class="ms-2">
+                    {{ $t('notif.lowStock.short', { n: c.shortfall }) }}
+                  </v-chip>
+                </div>
+              </div>
+              <v-list-item-subtitle>
+                {{ $t('notif.lowStock.hint') }}
+              </v-list-item-subtitle>
+            </template>
+            <v-list-item-subtitle v-else>{{ n.body }}</v-list-item-subtitle>
             <template #append>
               <div class="d-flex align-center gap-2">
                 <span class="text-caption text-medium-emphasis">{{ timeAgo(n.created_at) }}</span>
@@ -139,3 +174,22 @@ onMounted(refresh)
     </v-card>
   </v-container>
 </template>
+
+<style scoped>
+.low-stock-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.low-stock-row {
+  display: flex;
+  align-items: center;
+  font-size: 0.875rem;
+  /* The rows are a table of numbers; let them scroll rather than squash the
+     quantity against the minimum on a narrow screen. */
+  min-width: 0;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+</style>

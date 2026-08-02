@@ -108,6 +108,10 @@ export default {
       company: 'Company',
       unique: 'Unique',
     },
+    tracking: {
+      quantity: 'By quantity',
+      serial: 'By serial',
+    },
     storage: {
       assembled: 'Assembled',
       in_use: 'In use',
@@ -175,7 +179,7 @@ export default {
     state: 'State',
     type: 'Type',
     description: 'Description',
-    dmz: 'DM"C',
+    dmz: 'DAMATZ',
     location: 'Location',
     responsible: 'Card owner',
     lead: 'Responsible lead',
@@ -274,6 +278,7 @@ export default {
     brandSubtitle: 'Hardware asset tracking',
     demoAccounts: 'Demo accounts',
     demoHint: 'Tap a chip to auto-fill credentials, then Sign in.',
+    demoHintEmailOnly: 'Tap a chip to fill in the email, then type the password.',
   },
 
   dash: {
@@ -362,13 +367,21 @@ export default {
     desiccator: 'Desiccator',
     cols: {
       produced: 'Produced',
+      countedBy: 'Counted by',
+      records: 'Records',
       total: 'Total',
       inUse: 'In use',
       desiccator: 'Desiccator',
       assembled: 'Assembled',
     },
-    uniqueSerials: 'Unique serial numbers',
+    uniqueSerials: 'Serial numbers',
     noSerials: 'No individual serials tracked for this group.',
+    modelTotal: 'total under this name, split into {n} rows by version and production batch',
+    modelDesiccator: '{n} in desiccator',
+    explainQuantity:
+      '{total} units, entered by hand on {records} card record(s) — a commercial card is counted by its quantity, not by how many rows exist.',
+    explainSerial:
+      '{total} units = {records} card record(s), one per physical board. The serials behind the number:',
     noInventory: 'No inventory found',
     thresholdsTitle: 'Stock thresholds',
     lowCount: '{n} low',
@@ -418,6 +431,10 @@ export default {
     markAllToast: 'All notifications marked as read',
     allCaught: "You're all caught up",
     allCaughtHint: 'No notifications to show right now.',
+    lowStock: {
+      short: '{n} short',
+      hint: 'Current / minimum per component. Open to review inventory.',
+    },
   },
 
   users: {
@@ -440,6 +457,17 @@ export default {
     created: 'User created',
     deleted: 'User deleted',
     requiredFields: 'Email, name and password are required',
+    loginHint: 'Sign-in shortcut',
+    loginHintVisible: 'Offer this account on the login page',
+    loginHintWarning:
+      'The login page is reachable without signing in — any account you make visible, and any password you publish with it, is exposed to everyone who opens that page.',
+    loginHintPassword: 'Password to auto-fill (optional)',
+    loginHintPasswordSet: 'New password to auto-fill (one is published)',
+    loginHintPasswordHint: 'Leave empty and the shortcut fills only the email; the password is typed by hand.',
+    loginHintClear: 'Stop publishing the password',
+    hintWithPassword: 'Email + password',
+    hintEmailOnly: 'Email only',
+    hintHidden: 'Hidden',
   },
 
   loc: {
@@ -580,7 +608,16 @@ export default {
     cardDetails: 'Card details',
     catalogEmpty: 'No options yet — an admin can add them under Catalog.',
     templateNotice: 'Templates are reusable blueprints. They stay out of the live hierarchy, inventory and map.',
-    serialUniqueHint: 'Must be unique across all unique cards.',
+    serialUniqueHint: 'Must be unique across every card in the system.',
+    serialReq: 'Serial *',
+    serialRequired: 'A serial is required for a card tracked per unit',
+    quantityReq: 'Quantity *',
+    quantityHint: 'How many units this record stands for.',
+    quantityMin: 'Quantity must be at least 1',
+    quantityCardNotice:
+      'A commercial card is counted by quantity: one record holding the whole stock, no serial.',
+    serialCardNotice:
+      'This card is counted per unit: one record per physical board, each with its own serial.',
   },
 
   search: {

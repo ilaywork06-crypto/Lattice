@@ -22,6 +22,7 @@ import {
   STORAGE_STATUSES,
   TYPE_LABELS,
   formatDate,
+  isQuantityTracked,
 } from '@/constants'
 import type {
   BulkAction,
@@ -121,6 +122,7 @@ const headers = computed<Record<string, unknown>[]>(() => {
       { title: t('items.columns.storage'), key: 'storage_status', width: 140 },
       { title: t('fields.version'), key: 'version', width: 110 },
       { title: t('fields.serial'), key: 'serial', width: 130 },
+      { title: t('fields.quantity'), key: 'quantity', align: 'center', width: 100 },
     )
   } else {
     base.push(
@@ -171,8 +173,10 @@ async function openDuplicate(row: ItemListOut) {
       lead: full.lead,
       version: full.version,
       storage_status: full.storage_status,
-      // a duplicated unique card must get its own serial → leave blank
+      // a duplicated serialised card must get its own serial → leave blank;
+      // a commercial one is a quantity, and the copy starts at a single unit
       serial: null,
+      quantity: 1,
       manager_ids: full.managers.map((m) => m.id),
     }
     formOpen.value = true
@@ -449,6 +453,14 @@ onMounted(load)
         </template>
         <template #item.version="{ item }">
           {{ item.version || '—' }}
+        </template>
+        <template #item.quantity="{ item }">
+          <!-- A serialised card is always one board; showing "1" everywhere
+               would drown the commercial rows that carry real stock. -->
+          <span v-if="isQuantityTracked(item.card_type)" class="font-weight-medium">
+            {{ item.quantity }}
+          </span>
+          <span v-else class="text-medium-emphasis">—</span>
         </template>
         <template #item.serial="{ item }">
           {{ item.serial || '—' }}

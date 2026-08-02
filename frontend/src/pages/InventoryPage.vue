@@ -7,8 +7,8 @@ import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ConfirmDialog from '@/components/dialogs/ConfirmDialog.vue'
-import { CARD_TYPES, CARD_TYPE_LABELS, formatDate } from '@/constants'
-import type { CardType, InventoryGroup, ThresholdOut } from '@/api/types'
+import { CARD_TYPES, CARD_TYPE_LABELS, formatDate, TRACKING_LABELS } from '@/constants'
+import type { CardTracking, CardType, InventoryGroup, ThresholdOut } from '@/api/types'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -25,10 +25,12 @@ const thresholdsLoading = ref(false)
 
 const groupHeaders = computed(() => [
   { title: t('fields.cardType'), key: 'card_type', width: 130 },
+  { title: t('inventory.cols.countedBy'), key: 'tracking', width: 130 },
   { title: t('fields.name'), key: 'name' },
   { title: t('fields.version'), key: 'version', width: 110 },
   { title: t('inventory.cols.produced'), key: 'production_date', width: 130 },
   { title: t('inventory.cols.total'), key: 'total', align: 'center', width: 90 },
+  { title: t('inventory.cols.records'), key: 'records', align: 'center', width: 100 },
   { title: t('inventory.cols.inUse'), key: 'in_use', align: 'center', width: 90 },
   { title: t('inventory.cols.desiccator'), key: 'desiccator', align: 'center', width: 110 },
   { title: t('inventory.cols.assembled'), key: 'assembled', align: 'center', width: 110 },
@@ -38,6 +40,48 @@ const groupHeaders = computed(() => [
 function rowKey(g: InventoryGroup): string {
   return `${g.card_type}|${g.name}|${g.version ?? ''}|${g.production_date ?? ''}`
 }
+
+// A *model* is a card type + name. The table below splits each model by version
+// and production batch, so a name with 8 boards across two versions shows up as
+// 6 + 2 — correct, but it never showed the 8 anywhere, which is what made the
+// count look wrong. These rows roll the split back up.
+function modelKey(g: InventoryGroup): string {
+  return `${g.card_type}|${g.name}`
+}
+
+const rows = computed(() => groups.value.map((g) => ({ ...g, model: modelKey(g) })))
+
+interface ModelTotal {
+  card_type: CardType
+  name: string
+  total: number
+  in_use: number
+  desiccator: number
+  assembled: number
+  rows: number
+}
+
+const modelTotals = computed(() => {
+  const out: Record<string, ModelTotal> = {}
+  for (const g of groups.value) {
+    const key = modelKey(g)
+    const m = (out[key] ??= {
+      card_type: g.card_type,
+      name: g.name,
+      total: 0,
+      in_use: 0,
+      desiccator: 0,
+      assembled: 0,
+      rows: 0,
+    })
+    m.total += g.total
+    m.in_use += g.in_use
+    m.desiccator += g.desiccator
+    m.assembled += g.assembled
+    m.rows += 1
+  }
+  return out
+})
 
 async function loadGroups() {
   loading.value = true
@@ -170,17 +214,67 @@ onMounted(() => {
       <v-data-table
         v-model:expanded="expanded"
         :headers="groupHeaders as any"
-        :items="groups"
+        :items="rows"
         :loading="loading"
         :item-value="rowKey"
+        :group-by="[{ key: 'model', order: 'asc' }]"
         show-expand
         density="comfortable"
         :items-per-page="25"
       >
+        <!-- The model's own total, above its version/batch split. -->
+        <template #group-header="{ item, columns, toggleGroup, isGroupOpen }">
+          <tr class="model-row">
+            <td :colspan="columns.length" class="py-2">
+              <div class="d-flex align-center flex-wrap gap-2">
+                <v-btn
+                  :icon="isGroupOpen(item) ? '$expand' : '$next'"
+                  size="small"
+                  variant="text"
+                  density="comfortable"
+                  @click="toggleGroup(item)"
+                />
+                <span class="font-weight-bold">{{ modelTotals[item.value]?.name }}</span>
+                <v-chip size="x-small" variant="tonal" color="primary">
+                  {{ CARD_TYPE_LABELS[modelTotals[item.value]?.card_type as CardType] }}
+                </v-chip>
+                <v-chip size="small" variant="flat" color="blue-grey" class="font-weight-bold">
+                  {{ modelTotals[item.value]?.total }}
+                </v-chip>
+                <span class="text-caption text-medium-emphasis">
+                  {{ $t('inventory.modelTotal', {
+                    total: modelTotals[item.value]?.total ?? 0,
+                    n: modelTotals[item.value]?.rows ?? 0,
+                  }) }}
+                </span>
+                <v-spacer />
+                <span class="text-caption text-cyan-darken-2">
+                  {{ $t('inventory.modelDesiccator', { n: modelTotals[item.value]?.desiccator ?? 0 }) }}
+                </span>
+              </div>
+            </td>
+          </tr>
+        </template>
         <template #item.card_type="{ item }">
           <v-chip size="small" variant="tonal" color="primary">
             {{ CARD_TYPE_LABELS[item.card_type as CardType] }}
           </v-chip>
+        </template>
+        <!-- Where the number in "total" comes from. Without it, a commercial
+             card's stock and a batch of serialised boards look identical. -->
+        <template #item.tracking="{ item }">
+          <v-chip
+            v-if="item.tracking"
+            size="x-small"
+            variant="outlined"
+            :color="item.tracking === 'quantity' ? 'info' : 'teal'"
+            :prepend-icon="item.tracking === 'quantity' ? 'mdi-numeric' : 'mdi-barcode'"
+          >
+            {{ TRACKING_LABELS[item.tracking as CardTracking] }}
+          </v-chip>
+        </template>
+        <template #item.records="{ item }">
+          <span class="text-medium-emphasis">{{ item.records }}</span>
         </template>
         <template #item.name="{ item }">
           <span class="font-weight-medium">{{ item.name }}</span>
@@ -208,8 +302,16 @@ onMounted(() => {
         <template #expanded-row="{ columns, item }">
           <tr>
             <td :colspan="columns.length" class="py-3">
-              <template v-if="item.card_type === 'unique' && item.serials.length">
-                <div class="text-caption text-medium-emphasis mb-2">{{ $t('inventory.uniqueSerials') }}</div>
+              <!-- Spell the arithmetic out. "Where does 25 come from?" was the
+                   actual complaint, and it has a different answer per kind. -->
+              <div class="text-caption mb-2">
+                {{
+                  item.tracking === 'quantity'
+                    ? $t('inventory.explainQuantity', { total: item.total, records: item.records })
+                    : $t('inventory.explainSerial', { total: item.total, records: item.records })
+                }}
+              </div>
+              <template v-if="item.serials.length">
                 <div class="d-flex flex-wrap gap-2">
                   <v-chip
                     v-for="s in item.serials"
@@ -259,6 +361,7 @@ onMounted(() => {
         <thead>
           <tr>
             <th>{{ $t('fields.cardType') }}</th>
+            <th>{{ $t('inventory.cols.countedBy') }}</th>
             <th>{{ $t('fields.name') }}</th>
             <th>{{ $t('fields.version') }}</th>
             <th class="text-center">{{ $t('inventory.thCurrent') }}</th>
@@ -276,6 +379,11 @@ onMounted(() => {
           >
             <td>
               <v-chip size="x-small" variant="tonal">{{ CARD_TYPE_LABELS[t.card_type] }}</v-chip>
+            </td>
+            <td>
+              <span v-if="t.tracking" class="text-caption text-medium-emphasis">
+                {{ TRACKING_LABELS[t.tracking] }}
+              </span>
             </td>
             <td class="font-weight-medium">{{ t.name }}</td>
             <td>{{ t.version || '—' }}</td>
@@ -357,3 +465,9 @@ onMounted(() => {
     />
   </v-container>
 </template>
+
+<style scoped>
+.model-row {
+  background: rgba(var(--v-theme-on-surface), 0.035);
+}
+</style>

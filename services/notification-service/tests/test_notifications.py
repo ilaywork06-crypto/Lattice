@@ -57,6 +57,36 @@ def test_read_all(client, token_for):
     assert client.get("/notifications/unread-count", headers=h).json()["count"] == 0
 
 
+def test_low_stock_components_reach_the_api_as_data(client, token_for):
+    """The component list is what makes the alert readable, so it has to survive
+    the trip as structured data — the UI renders a table, not the prose body."""
+    event = Event(
+        type=EventType.LOW_STOCK,
+        title="Low stock: 2 component(s) below minimum",
+        body="• FPGA Processing Core (unique) — 3 in stock, minimum 5",
+        link="/inventory",
+        recipients=[Recipient(user_id=7, email="noa@lattice.io", role="manager")],
+        payload={
+            "components": [
+                {"name": "FPGA Processing Core", "current_quantity": 3, "min_quantity": 5},
+                {"name": "COTS Ethernet NIC", "current_quantity": 4, "min_quantity": 6},
+            ]
+        },
+    )
+    assert _persist_notifications(event) == 1
+
+    latest = client.get("/notifications", headers=token_for(7)).json()[0]
+    assert [c["name"] for c in latest["payload"]["components"]] == [
+        "FPGA Processing Core",
+        "COTS Ethernet NIC",
+    ]
+
+
+def test_notifications_without_a_payload_stay_null(client, token_for):
+    assert _persist_notifications(_event()) == 2
+    assert client.get("/notifications", headers=token_for(3)).json()[0]["payload"] is None
+
+
 def test_email_fanout_never_raises(client):
     # No SMTP server in tests → must be caught and logged, not raised.
     asyncio.run(_send_emails(_event()))

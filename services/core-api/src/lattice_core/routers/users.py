@@ -70,8 +70,23 @@ def update_user(
         user.is_active = data.is_active
     if data.password:
         user.hashed_password = hash_password(data.password)
+    if data.login_hint_visible is not None:
+        user.login_hint_visible = data.login_hint_visible
+    if data.login_hint_password is not None:
+        # An empty string is the explicit "stop publishing the password" signal —
+        # `None` here only ever means "the caller didn't mention this field".
+        user.login_hint_password = data.login_hint_password.strip() or None
     record_audit(
-        db, action="user.update", summary=f"Updated user {user.email}", user=current
+        db,
+        action="user.update",
+        summary=f"Updated user {user.email}",
+        user=current,
+        # Publishing an account on the sign-in screen is a security-relevant
+        # decision, so it lands in the audit log as its own fact (§10).
+        details={
+            "login_hint_visible": user.login_hint_visible,
+            "login_hint_password_set": user.has_login_hint_password,
+        },
     )
     db.commit()
     db.refresh(user)

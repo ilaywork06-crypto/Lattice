@@ -53,6 +53,37 @@ class CardType(str, enum.Enum):
     unique = "unique"          # כרטיס ייחודי
 
 
+class CardTracking(str, enum.Enum):
+    """How a card's stock is counted.
+
+    Two genuinely different things hide behind the word "card": an off-the-shelf
+    part you hold N interchangeable copies of, and an individually identified
+    board you track one at a time. Conflating them is what made the inventory
+    numbers unreadable — a commercial card now carries an explicit ``quantity``
+    on a single row, while a serialised card is one row per physical unit with a
+    mandatory, globally unique serial.
+    """
+
+    quantity = "quantity"  # כרטיס מסחרי — שורה אחת עם כמות
+    serial = "serial"      # כרטיס עם סריאלי — שורה לכל יחידה פיזית
+
+
+CARD_TRACKING: dict[CardType, CardTracking] = {
+    CardType.commercial: CardTracking.quantity,
+    CardType.company: CardTracking.serial,
+    CardType.unique: CardTracking.serial,
+}
+
+SERIAL_TRACKED_CARD_TYPES: tuple[CardType, ...] = tuple(
+    ct for ct, tracking in CARD_TRACKING.items() if tracking is CardTracking.serial
+)
+
+
+def card_tracking(card_type: CardType | None) -> CardTracking | None:
+    """The tracking mode for a card type (``None`` for non-cards/unset)."""
+    return CARD_TRACKING.get(card_type) if card_type is not None else None
+
+
 class ItemState(str, enum.Enum):
     production = "production"  # ייצור
     built = "built"            # בנוי
@@ -118,9 +149,25 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
+    # Sign-in screen shortcuts (§8). A manager decides which accounts are offered
+    # there and whether the password is pre-filled too. The endpoint serving
+    # these is necessarily unauthenticated — it *is* the login page — so both
+    # default to off and nothing is published without a deliberate decision.
+    login_hint_visible: Mapped[bool] = mapped_column(Boolean, default=False)
+    login_hint_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     managed_items: Mapped[list[Item]] = relationship(
         secondary=item_managers, back_populates="managers"
     )
+
+    @property
+    def has_login_hint_password(self) -> bool:
+        """Whether a password is published with this account's shortcut.
+
+        The value itself is never handed back through the authenticated API —
+        managers set a new one rather than reading the old one back.
+        """
+        return bool(self.login_hint_password)
 
 
 # ───────────────────────── Locations ─────────────────────────
@@ -200,6 +247,11 @@ class Item(Base):
     storage_status: Mapped[StorageStatus | None] = mapped_column(
         Enum(StorageStatus), nullable=True, index=True
     )
+    # How many physical units this row stands for. Serial-tracked cards are
+    # always 1 (one row per unit); a commercial card keeps its whole stock here.
+    # Inventory can therefore SUM a single column across both worlds instead of
+    # counting rows and hoping the caller knows which rule applied.
+    quantity: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

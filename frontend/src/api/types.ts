@@ -4,6 +4,9 @@
 
 export type ItemType = 'setup' | 'assembly' | 'card'
 export type CardType = 'commercial' | 'company' | 'unique'
+/** How a card's stock is counted: one row holding a quantity of interchangeable
+ *  parts (commercial), or one row per physical unit keyed by serial. */
+export type CardTracking = 'quantity' | 'serial'
 export type ItemState = 'production' | 'built' | 'used' | 'working' | 'faulty'
 export type StorageStatus = 'assembled' | 'in_use' | 'desiccator'
 export type UserRole = 'viewer' | 'editor' | 'manager'
@@ -36,6 +39,19 @@ export interface UserBrief {
 export interface User extends UserBrief {
   is_active: boolean
   created_at?: string
+  /** Offered as a shortcut on the sign-in screen. */
+  login_hint_visible: boolean
+  /** Whether a password is published with that shortcut — never the value. */
+  has_login_hint_password: boolean
+}
+
+/** A sign-in shortcut, served unauthenticated to the login page. `password` is
+ *  filled in only where a manager explicitly published one. */
+export interface LoginHint {
+  full_name: string
+  email: string
+  role: UserRole
+  password: string | null
 }
 
 // ---- Locations ------------------------------------------------------------
@@ -103,6 +119,7 @@ export interface ItemListOut {
   card_type: CardType | null
   version: string | null
   serial: string | null
+  quantity: number
   storage_status: StorageStatus | null
   parent_id: number | null
   location_id: number | null
@@ -153,6 +170,8 @@ export interface ItemOut {
   production_date: string | null
   version: string | null
   serial: string | null
+  /** Units on this row. Always 1 for serial-tracked cards and non-cards. */
+  quantity: number
   storage_status: StorageStatus | null
   parent_id: number | null
   location_id: number | null
@@ -185,6 +204,7 @@ export interface ItemCreate {
   production_date?: string | null
   version?: string | null
   serial?: string | null
+  quantity?: number
   storage_status?: StorageStatus | null
   manager_ids?: number[]
   child_ids?: number[]
@@ -312,6 +332,8 @@ export interface InventorySummary {
 
 export interface InventoryGroup {
   card_type: CardType
+  /** How `total` was arrived at — summed quantities, or one row per unit. */
+  tracking: CardTracking | null
   name: string
   version: string | null
   production_date: string | null
@@ -319,12 +341,15 @@ export interface InventoryGroup {
   in_use: number
   desiccator: number
   assembled: number
+  /** How many item rows add up to `total`. */
+  records: number
   serials: string[]
 }
 
 export interface ThresholdOut {
   id: number
   card_type: CardType
+  tracking: CardTracking | null
   name: string
   version: string | null
   min_quantity: number
@@ -384,7 +409,27 @@ export interface NotificationItem {
   type: string
   title: string
   body: string | null
+  /** Structured context from the source event. Low-stock alerts carry
+   *  `{ components: LowStockComponent[] }` so the list renders as a table. */
+  payload: NotificationPayload | null
   link: string | null
   read: boolean
   created_at: string
+}
+
+export interface LowStockComponent {
+  threshold_id: number
+  name: string
+  card_type: CardType
+  tracking: CardTracking | null
+  version: string | null
+  current_quantity: number
+  min_quantity: number
+  /** How many units to add to climb back above the minimum. */
+  shortfall: number
+}
+
+export interface NotificationPayload {
+  components?: LowStockComponent[]
+  [key: string]: unknown
 }

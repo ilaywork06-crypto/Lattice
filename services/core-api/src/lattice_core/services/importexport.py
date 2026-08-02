@@ -25,7 +25,8 @@ from lattice_core.services.items import create_item
 COLUMNS = [
     "type", "name", "industry", "project", "team", "state",
     "card_type", "responsible", "lead", "production_date", "version",
-    "serial", "storage_status", "location", "parent_id", "description", "dmz",
+    "serial", "quantity", "storage_status", "location", "parent_id",
+    "description", "dmz",
 ]
 
 
@@ -37,6 +38,19 @@ def _enum(value, enum_cls, field: str):
     except ValueError as exc:
         allowed = ", ".join(e.value for e in enum_cls)
         raise ValueError(f"Invalid {field} '{value}'. Allowed: {allowed}") from exc
+
+
+def _to_quantity(value) -> int:
+    """Blank means one unit — the overwhelmingly common case for a card row."""
+    if value in (None, ""):
+        return 1
+    try:
+        qty = int(float(str(value).strip()))
+    except ValueError as exc:
+        raise ValueError(f"Invalid quantity '{value}' (whole number, 1 or more)") from exc
+    if qty < 1:
+        raise ValueError(f"Invalid quantity '{value}' (must be at least 1)")
+    return qty
 
 
 def _to_date(value) -> date | None:
@@ -60,26 +74,53 @@ def build_template(item_type: ItemType | None = None) -> bytes:
     ws = wb.active
     ws.title = "items"
     ws.append(COLUMNS)
-    example = {
-        "type": (item_type.value if item_type else "card"),
-        "name": "Example card",
-        "industry": "Avionics",
-        "project": "Falcon",
-        "team": "HW-Team-A",
-        "state": "built",
-        "card_type": "company",
-        "responsible": "Dana",
-        "lead": "Noa",
-        "production_date": "2025-03-01",
-        "version": "1.2",
-        "serial": "SN-0001",
-        "storage_status": "desiccator",
-        "location": "Lab A - Shelf 1",
-        "parent_id": "",
-        "description": "Free text",
-        "dmz": "Detailed status",
-    }
-    ws.append([example[c] for c in COLUMNS])
+    # Two example rows, because the two kinds of card are filled in differently:
+    # a serialised one needs a serial and stands for a single board, a commercial
+    # one needs a quantity and no serial (§2/§12).
+    examples = [
+        {
+            "type": (item_type.value if item_type else "card"),
+            "name": "Example serialised card",
+            "industry": "Avionics",
+            "project": "Falcon",
+            "team": "HW-Team-A",
+            "state": "built",
+            "card_type": "company",
+            "responsible": "Dana",
+            "lead": "Noa",
+            "production_date": "2025-03-01",
+            "version": "1.2",
+            "serial": "SN-0001",
+            "quantity": 1,
+            "storage_status": "desiccator",
+            "location": "Lab A - Shelf 1",
+            "parent_id": "",
+            "description": "One row per physical board; serial is mandatory.",
+            "dmz": "Detailed status",
+        },
+        {
+            "type": (item_type.value if item_type else "card"),
+            "name": "Example commercial card",
+            "industry": "Avionics",
+            "project": "Falcon",
+            "team": "HW-Team-A",
+            "state": "working",
+            "card_type": "commercial",
+            "responsible": "Dana",
+            "lead": "Noa",
+            "production_date": "",
+            "version": "",
+            "serial": "",
+            "quantity": 25,
+            "storage_status": "desiccator",
+            "location": "Lab A - Shelf 1",
+            "parent_id": "",
+            "description": "One row for the whole stock; leave the serial empty.",
+            "dmz": "",
+        },
+    ]
+    for example in examples:
+        ws.append([example[c] for c in COLUMNS])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -154,6 +195,7 @@ def import_items(db: Session, content: bytes, user: User) -> dict:
                 "serial": (
                     str(record["serial"]).strip() if record.get("serial") else None
                 ),
+                "quantity": _to_quantity(record.get("quantity")),
                 "storage_status": _enum(
                     record.get("storage_status"), StorageStatus, "storage_status"
                 ),
@@ -200,6 +242,7 @@ def export_items(db: Session, item_type: ItemType | None = None) -> bytes:
             it.production_date.isoformat() if it.production_date else None,
             it.version,
             it.serial,
+            it.quantity,
             it.storage_status.value if it.storage_status else None,
             it.location.name if it.location else None,
             it.parent_id,

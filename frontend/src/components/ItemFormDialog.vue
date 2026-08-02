@@ -7,6 +7,7 @@ import { useCatalogStore } from '@/stores/catalog'
 import {
   CARD_TYPES,
   CARD_TYPE_LABELS,
+  isQuantityTracked,
   ITEM_STATES,
   STATE_LABELS,
   STORAGE_LABELS,
@@ -89,6 +90,7 @@ interface FormModel {
   production_date: string
   version: string
   serial: string
+  quantity: number
   storage_status: StorageStatus | null
   manager_ids: number[]
   child_ids: number[]
@@ -112,6 +114,7 @@ function emptyModel(): FormModel {
     production_date: '',
     version: '',
     serial: '',
+    quantity: 1,
     storage_status: null,
     manager_ids: [],
     child_ids: [],
@@ -120,6 +123,12 @@ function emptyModel(): FormModel {
 }
 
 const form = reactive<FormModel>(emptyModel())
+
+// The two kinds of card are filled in differently, and the form says so rather
+// than letting the server reject the save: a commercial card is a quantity of
+// interchangeable parts, everything else is one board with its own serial.
+const byQuantity = computed(() => isCard.value && isQuantityTracked(form.card_type))
+const bySerial = computed(() => isCard.value && !!form.card_type && !byQuantity.value)
 const formRef = ref()
 const valid = ref(false)
 const saving = ref(false)
@@ -224,6 +233,7 @@ function hydrate() {
       production_date: it.production_date ?? '',
       version: it.version ?? '',
       serial: it.serial ?? '',
+      quantity: it.quantity ?? 1,
       storage_status: it.storage_status ?? null,
       manager_ids: it.managers.map((m) => m.id),
     })
@@ -243,6 +253,7 @@ function hydrate() {
       responsible: p.responsible ?? '',
       lead: p.lead ?? '',
       version: p.version ?? '',
+      quantity: p.quantity ?? 1,
       storage_status: p.storage_status ?? (isCard.value && !props.asTemplate ? 'desiccator' : null),
       manager_ids: p.manager_ids ?? [],
     })
@@ -263,6 +274,13 @@ watch(
 )
 
 const nameRules = [(v: string) => !!v?.trim() || t('itemForm.nameRequired')]
+// Both mirror server rules, so the user is told before the round-trip.
+const serialRules = [
+  (v: string) => !bySerial.value || props.asTemplate || !!v?.trim() || t('itemForm.serialRequired'),
+]
+const quantityRules = [
+  (v: number) => !byQuantity.value || Number(v) >= 1 || t('itemForm.quantityMin'),
+]
 // Mirrors the server rule, so the user is told before the round-trip instead of
 // bouncing off a 400.
 const stateNoteRules = [
@@ -293,7 +311,11 @@ function buildPayload(): ItemCreate | ItemUpdate {
     base.lead = clean(form.lead)
     base.production_date = clean(form.production_date)
     base.version = clean(form.version)
-    base.serial = clean(form.serial)
+    // Send only the field that applies to this kind of card: a serial on a
+    // commercial card is rejected outright, and a quantity on a serialised one
+    // likewise — sending both would turn a valid form into a 400.
+    base.serial = byQuantity.value ? null : clean(form.serial)
+    base.quantity = byQuantity.value ? Number(form.quantity) || 1 : 1
     base.storage_status = form.storage_status
   }
   if (props.mode === 'create') {
@@ -476,18 +498,46 @@ const dialogTitle = computed(() => {
               <v-col cols="12" sm="6">
                 <v-text-field v-model="form.lead" :label="$t('fields.lead')" />
               </v-col>
+              <v-col cols="12">
+                <v-alert
+                  v-if="form.card_type"
+                  :type="byQuantity ? 'info' : 'success'"
+                  variant="tonal"
+                  density="compact"
+                  :icon="byQuantity ? 'mdi-numeric' : 'mdi-barcode'"
+                >
+                  {{ byQuantity ? $t('itemForm.quantityCardNotice') : $t('itemForm.serialCardNotice') }}
+                </v-alert>
+              </v-col>
               <v-col cols="12" sm="4">
                 <v-text-field v-model="form.production_date" :label="$t('fields.productionDate')" type="date" />
               </v-col>
               <v-col cols="12" sm="4">
                 <v-text-field v-model="form.version" :label="$t('fields.version')" />
               </v-col>
-              <v-col cols="12" sm="4">
+              <!-- One field or the other, never both: which one is what makes a
+                   commercial card a different thing from a serialised one. -->
+              <v-col v-if="byQuantity" cols="12" sm="4">
+                <v-text-field
+                  v-model.number="form.quantity"
+                  :label="$t('itemForm.quantityReq')"
+                  :rules="quantityRules"
+                  type="number"
+                  min="1"
+                  prepend-inner-icon="mdi-numeric"
+                  :hint="$t('itemForm.quantityHint')"
+                  persistent-hint
+                />
+              </v-col>
+              <v-col v-else cols="12" sm="4">
                 <v-text-field
                   v-model="form.serial"
-                  :label="$t('fields.serial')"
-                  :hint="form.card_type === 'unique' ? $t('itemForm.serialUniqueHint') : ''"
-                  :persistent-hint="form.card_type === 'unique'"
+                  :label="bySerial && !asTemplate ? $t('itemForm.serialReq') : $t('fields.serial')"
+                  :rules="serialRules"
+                  :disabled="!form.card_type"
+                  prepend-inner-icon="mdi-barcode"
+                  :hint="bySerial ? $t('itemForm.serialUniqueHint') : ''"
+                  :persistent-hint="bySerial"
                 />
               </v-col>
             </template>

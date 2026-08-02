@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from lattice_core.config import get_settings
@@ -30,8 +31,34 @@ from lattice_core.services import items as item_svc
 logger = logging.getLogger("lattice_core.seed")
 
 
+# Columns added after the first release, as (table, column, DDL type + default).
+# The schema comes from ``create_all``, which only ever creates *missing tables*
+# — it never touches one that already exists — so a database predating any of
+# these would fail on every query for them.
+_ADDED_COLUMNS = [
+    ("items", "quantity", "INTEGER NOT NULL DEFAULT 1"),
+    ("users", "login_hint_visible", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("users", "login_hint_password", "VARCHAR(255)"),
+]
+
+
+def _ensure_columns() -> None:
+    """Backfill columns introduced after a database was created. Idempotent."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    for table, column, ddl in _ADDED_COLUMNS:
+        if table not in tables:
+            continue
+        if column in {c["name"] for c in inspector.get_columns(table)}:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        logger.info("Added %s.%s to an existing database", table, column)
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
     settings = get_settings()
     with SessionLocal() as db:
         admin = _ensure_admin(db, settings)
@@ -91,25 +118,37 @@ def _seed_demo(db: Session, admin: User) -> None:
     logger.info("Seeding demo data …")
 
     # ── users ──
+    # `login_hint_*` publishes these on the sign-in screen. It is set here, in
+    # the demo-only path, and never by `_ensure_admin` — a real deployment must
+    # not put its bootstrap admin's password on a public page. Managers can
+    # retire any of these shortcuts from Users & Permissions.
     noa = User(
         email="noa@lattice.io",
         full_name="Noa (Team Lead)",
         hashed_password=hash_password("password"),
         role=UserRole.manager,
+        login_hint_visible=True,
+        login_hint_password="password",
     )
     dana = User(
         email="dana@lattice.io",
         full_name="Dana (Editor)",
         hashed_password=hash_password("password"),
         role=UserRole.editor,
+        login_hint_visible=True,
+        login_hint_password="password",
     )
     amir = User(
         email="amir@lattice.io",
         full_name="Amir (Viewer)",
         hashed_password=hash_password("password"),
         role=UserRole.viewer,
+        login_hint_visible=True,
+        login_hint_password="password",
     )
     db.add_all([noa, dana, amir])
+    admin.login_hint_visible = True
+    admin.login_hint_password = get_settings().bootstrap_admin_password
     db.flush()
 
     # ── admin-managed catalogs (§2): items may only use these values ──
@@ -143,66 +182,70 @@ def _seed_demo(db: Session, admin: User) -> None:
         return item_svc.create_item(db, kw, admin)
 
     # ── cards ──
-    company_cards = []
-    for i in range(1, 7):
-        company_cards.append(
-            make(
-                type=ItemType.card,
-                name="Power Regulator Board",
-                card_type=CardType.company,
-                version="1.2",
-                production_date=date(2025, 3, 1),
-                state=ItemState.built,
-                storage_status=StorageStatus.desiccator,
-                location_id=locs["desiccator"].id,
-                project="Falcon",
-                industry="Avionics",
-                responsible="Dana",
-                lead="Noa",
-                serial=f"PRB-{i:03d}",
-            )
+    # Kept deliberately small: one example of each case worth seeing, not a
+    # warehouse. Serialised boards across two versions (so the version/date
+    # breakdown has something to break down), a couple of unique cards, and a
+    # single quantity-tracked commercial row.
+    company_cards = [
+        make(
+            type=ItemType.card,
+            name="Power Regulator Board",
+            card_type=CardType.company,
+            version="1.2",
+            production_date=date(2025, 3, 1),
+            state=ItemState.built,
+            storage_status=StorageStatus.desiccator,
+            location_id=locs["desiccator"].id,
+            project="Falcon",
+            industry="Avionics",
+            responsible="Dana",
+            lead="Noa",
+            serial=f"PRB-{i:03d}",
         )
-    for i in range(1, 3):
-        company_cards.append(
-            make(
-                type=ItemType.card,
-                name="Power Regulator Board",
-                card_type=CardType.company,
-                version="1.3",
-                production_date=date(2025, 6, 15),
-                state=ItemState.built,
-                storage_status=StorageStatus.desiccator,
-                location_id=locs["desiccator"].id,
-                project="Falcon",
-                industry="Avionics",
-                serial=f"PRB13-{i:03d}",
-            )
+        for i in range(1, 4)
+    ]
+    company_cards.append(
+        make(
+            type=ItemType.card,
+            name="Power Regulator Board",
+            card_type=CardType.company,
+            version="1.3",
+            production_date=date(2025, 6, 15),
+            state=ItemState.built,
+            storage_status=StorageStatus.desiccator,
+            location_id=locs["desiccator"].id,
+            project="Falcon",
+            industry="Avionics",
+            serial="PRB13-001",
         )
+    )
 
-    unique_cards = []
-    for i in range(1, 4):
-        unique_cards.append(
-            make(
-                type=ItemType.card,
-                name="FPGA Processing Core",
-                card_type=CardType.unique,
-                version="2.0",
-                production_date=date(2025, 2, 10),
-                state=ItemState.working,
-                storage_status=StorageStatus.desiccator,
-                location_id=locs["desiccator"].id,
-                project="Falcon",
-                industry="Avionics",
-                responsible="Noa",
-                lead="Noa",
-                serial=f"FPGA-2024-{i:04d}",
-            )
+    unique_cards = [
+        make(
+            type=ItemType.card,
+            name="FPGA Processing Core",
+            card_type=CardType.unique,
+            version="2.0",
+            production_date=date(2025, 2, 10),
+            state=ItemState.working,
+            storage_status=StorageStatus.desiccator,
+            location_id=locs["desiccator"].id,
+            project="Falcon",
+            industry="Avionics",
+            responsible="Noa",
+            lead="Noa",
+            serial=f"FPGA-2024-{i:04d}",
         )
+        for i in range(1, 3)
+    ]
 
+    # A commercial card is a *quantity* of interchangeable parts on one row —
+    # no serial, no six near-identical rows to count by hand (§12).
     commercial = make(
         type=ItemType.card,
         name="COTS Ethernet NIC",
         card_type=CardType.commercial,
+        quantity=4,
         state=ItemState.working,
         storage_status=StorageStatus.in_use,
         location_id=locs["storage"].id,
@@ -234,13 +277,15 @@ def _seed_demo(db: Session, admin: User) -> None:
         industry="Avionics",
         team="Integration",
         description="Large setup for running the Falcon software stack.",
-        dmz="Full DM\"C: 1x SPM assembly, 2x company cards, 1x unique core, 1x NIC.",
+        dmz="Full DAMATZ: 1x SPM assembly, 1x company card, 4x NIC.",
         manager_ids=[noa.id],
     )
     item_svc.link_item(db, assembly, setup, admin)
     item_svc.link_item(db, company_cards[1], setup, admin)
-    item_svc.link_item(db, unique_cards[1], setup, admin)
     item_svc.link_item(db, commercial, setup, admin)
+    # unique_cards[1] and the remaining boards stay in the desiccator on purpose:
+    # with the demo this small, every card group needs stock left in there for
+    # /inventory/desiccator to have anything to show.
 
     # a fault + recovery to populate state history
     item_svc.change_state(
@@ -287,7 +332,7 @@ def _seed_demo(db: Session, admin: User) -> None:
         StockThreshold(
             card_type=CardType.company,
             name="Power Regulator Board",
-            min_quantity=4,
+            min_quantity=2,  # comfortably stocked — the healthy row for contrast
             editor_email=dana.email,
         )
     )
@@ -295,7 +340,15 @@ def _seed_demo(db: Session, admin: User) -> None:
         StockThreshold(
             card_type=CardType.unique,
             name="FPGA Processing Core",
-            min_quantity=5,  # deliberately triggers a low-stock alert in the demo
+            min_quantity=4,  # deliberately triggers a low-stock alert in the demo
+        )
+    )
+    db.add(
+        StockThreshold(
+            card_type=CardType.commercial,
+            name="COTS Ethernet NIC",
+            min_quantity=6,  # 4 in stock → a second component in the same digest
+            editor_email=dana.email,
         )
     )
 

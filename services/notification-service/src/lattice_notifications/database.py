@@ -48,3 +48,21 @@ def init_db() -> None:
     from lattice_notifications import models  # noqa: F401  (registers mappers)
 
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
+
+
+def _ensure_columns() -> None:
+    """Add columns introduced after the table was first created.
+
+    ``create_all`` never alters an existing table, so a database from before
+    ``notifications.payload`` existed would break on every read. Idempotent.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "notifications" not in inspector.get_table_names():
+        return
+    if "payload" in {c["name"] for c in inspector.get_columns("notifications")}:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE notifications ADD COLUMN payload JSON"))

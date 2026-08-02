@@ -23,6 +23,7 @@ import type {
   ItemType,
   ItemUpdate,
   LocationOut,
+  LoginHint,
   LoginResponse,
   MapBuilding,
   MapBuildingCreate,
@@ -51,6 +52,11 @@ export const authApi = {
   },
   async me(): Promise<User> {
     const { data } = await coreApi.get<User>('/auth/me')
+    return data
+  },
+  /** Sign-in shortcuts a manager published. Unauthenticated — it runs before login. */
+  async loginHints(): Promise<LoginHint[]> {
+    const { data } = await coreApi.get<LoginHint[]>('/auth/login-hints')
     return data
   },
 }
@@ -288,8 +294,8 @@ export const auditApi = {
 // Users
 // ---------------------------------------------------------------------------
 export const usersApi = {
-  async list(): Promise<UserBrief[]> {
-    const { data } = await coreApi.get<UserBrief[]>('/users')
+  async list(): Promise<User[]> {
+    const { data } = await coreApi.get<User[]>('/users')
     return data
   },
   async managers(): Promise<UserBrief[]> {
@@ -307,7 +313,15 @@ export const usersApi = {
   },
   async update(
     id: number,
-    body: { full_name?: string; role?: UserRole; is_active?: boolean; password?: string },
+    body: {
+      full_name?: string
+      role?: UserRole
+      is_active?: boolean
+      password?: string
+      login_hint_visible?: boolean
+      /** `''` withdraws a published password, leaving the email-only shortcut. */
+      login_hint_password?: string
+    },
   ): Promise<User> {
     const { data } = await coreApi.patch<User>(`/users/${id}`, body)
     return data

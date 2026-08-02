@@ -32,6 +32,9 @@ class NotificationOut(BaseModel):
     type: str
     title: str
     body: str
+    # Structured context from the source event — e.g. `{"components": [...]}` on
+    # a low-stock alert, which the UI renders as a table instead of prose.
+    payload: dict | None = None
     link: str | None = None
     read: bool
     created_at: datetime

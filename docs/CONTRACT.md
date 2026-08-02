@@ -15,6 +15,12 @@ OAuth2 password flow, JWT bearer tokens. Both services validate the **same** JWT
 - `POST /auth/login` — form-encoded `username` (=email) + `password`.
   → `{ access_token, token_type, role, full_name, user_id }`
 - `GET /auth/me` (Bearer) → current `User`.
+- `GET /auth/login-hints` — **unauthenticated**, feeds the sign-in screen's
+  account shortcuts → `[{ full_name, email, role, password }]`.
+  Returns only *active* accounts a manager marked `login_hint_visible`, and
+  `password` only where a manager explicitly published one (`null` otherwise —
+  the shortcut then fills the email alone). Nothing is exposed by default: new
+  accounts start hidden, and the demo seed is what publishes the demo logins.
 
 Send `Authorization: Bearer <token>` on every other request.
 
@@ -31,6 +37,7 @@ branch on role: managers act directly; editors open a change-request dialog.
 ## Enums
 - `ItemType`: `setup | assembly | card`
 - `CardType`: `commercial | company | unique`
+- `CardTracking`: `quantity | serial` — derived from `CardType` (`commercial` → `quantity`, the rest → `serial`), never sent by the client
 - `ItemState`: `production | built | used | working | faulty`
 - `StorageStatus`: `assembled | in_use | desiccator`
 - `UserRole`: `viewer | editor | manager`
@@ -42,7 +49,7 @@ branch on role: managers act directly; editors open a change-request dialog.
 ### Items
 - `GET /items` → `ItemListOut[]`. Query: `type,state,card_type,storage_status,project,industry,location_id,unassigned(bool),templates(bool),search,limit,offset`.
   `templates=true` returns only templates; default (`false`) excludes them (they never mix with live items).
-  `ItemListOut = { id, type, name, industry, project, team, state, card_type, version, serial, storage_status, parent_id, location_id, location_name, children_count, is_template, manager_names[], updated_at }`
+  `ItemListOut = { id, type, name, industry, project, team, state, card_type, version, serial, quantity, storage_status, parent_id, location_id, location_name, children_count, is_template, manager_names[], updated_at }`
 - `GET /items/{id}` → `ItemOut` (full: `is_template`, `location`, `parent` (brief), `children` (brief[]), `managers` (brief[]), `state_history[]`, `documents[]`, `extra_items[]`).
 - `POST /items` (manager) body `ItemCreate` → `ItemOut`.
 - `PATCH /items/{id}` (manager) body `ItemUpdate` → `ItemOut`.
@@ -57,12 +64,19 @@ branch on role: managers act directly; editors open a change-request dialog.
 - `POST /items/{id}/extras` (manager, setups only) `{ name, company_part_number?, serial?, signed_by? }` → `ExtraItemOut`.
 - `DELETE /items/{id}/extras/{extra_id}` (manager) → 204.
 
-`ItemCreate` fields: `type(req), name(req), industry, project, team, state(=production), description, dmz, location_id, parent_id, is_template(=false), card_type, responsible, lead, production_date(YYYY-MM-DD), version, serial, storage_status, manager_ids[], child_ids[]`.
+`ItemCreate` fields: `type(req), name(req), industry, project, team, state(=production), description, dmz, location_id, parent_id, is_template(=false), card_type, responsible, lead, production_date(YYYY-MM-DD), version, serial, quantity(=1), storage_status, manager_ids[], child_ids[]`.
 `ItemUpdate`: same mutable subset (all optional), plus `manager_ids`.
 - `project`/`industry` must reference an **active catalog value** (§2) or the request 400s.
 - `child_ids[]` (create only): existing items adopted as children — a setup accepts assemblies **and** cards (§8), an assembly accepts cards; each adopted subtree inherits the new parent's location (§9).
 - `is_template=true` creates a reusable blueprint that stays out of the hierarchy, inventory, graph and export.
-- A `unique` card's `serial` must be globally unique (else 400).
+- **Names are unique** (trimmed, case-insensitive) across live setups, assemblies and quantity-tracked cards (else 400). Serial-tracked cards are exempt — a batch is many rows of one model, told apart by serial. Templates never take part.
+- **Two kinds of card**, decided by `card_type` (required on every card):
+  | `card_type` | tracking | `quantity` | `serial` |
+  |---|---|---|---|
+  | `commercial` | `quantity` | the stock on this row (≥1) | must be empty |
+  | `company`, `unique` | `serial` | pinned to 1 | **required**, globally unique |
+  Sending the field that doesn't apply 400s. Changing `card_type` normalises the leftover (a stranded serial is cleared, a quantity reset to 1) and records it in the audit log, since a PATCH cannot clear a field with `null`.
+- A `serial` is globally unique across every card type and item (else 400).
 
 ### Change requests (§9)
 - `POST /change-requests` (editor+) body `{ action, item_id?, item_type?, payload{}, description(req), reason(req) }` → `ChangeRequestOut`. Fires manager notification.
@@ -75,11 +89,15 @@ branch on role: managers act directly; editors open a change-request dialog.
 `ChangeRequestOut = { id, action, item_id, item_type, item_name, payload, description, reason, status, proposed_by, reviewed_by, review_note, created_at, reviewed_at, proposer{brief}, reviewer{brief} }`.
 
 ### Inventory (§7, §12)
-- `GET /inventory/summary` → `{ setups, assemblies, cards, cards_in_use, cards_desiccator, faulty_items, pending_change_requests, low_stock_alerts }`.
+All stock figures are **sums of `Item.quantity`**, never row counts: a serial-tracked card pins that column to 1, a commercial card holds its whole stock on one row.
+
+- `GET /inventory/summary` → `{ setups, assemblies, cards, cards_in_use, cards_desiccator, faulty_items, pending_change_requests, low_stock_alerts }`. The three `cards*` figures count physical units.
 - `GET /inventory/cards?card_type=` → `InventoryGroup[]`.
 - `GET /inventory/desiccator?card_type=` → `InventoryGroup[]`.
-  `InventoryGroup = { card_type, name, version, production_date, total, in_use, desiccator, assembled, serials[] }` (serials only for `unique`).
-- `GET /inventory/thresholds` → `ThresholdOut[]` (`{ id, card_type, name, version, min_quantity, editor_email, current_quantity, is_low }`).
+  `InventoryGroup = { card_type, tracking, name, version, production_date, total, in_use, desiccator, assembled, records, serials[] }`.
+  `tracking` (`quantity|serial`) and `records` (rows behind `total`) explain where the number came from; `serials[]` lists every unit of a serial-tracked group. Commercial cards are included — they used to be filtered out entirely.
+  **One card name is several groups**: the key is `(card_type, name, version, production_date)`, so 8 boards under one name across two versions come back as `total: 6` + `total: 2` and *no* group says 8. The parts always sum to the whole; the UI adds the per-model subtotal on top.
+- `GET /inventory/thresholds` → `ThresholdOut[]` (`{ id, card_type, tracking, name, version, min_quantity, editor_email, current_quantity, is_low }`).
 - `GET /inventory/low-stock` → `ThresholdOut[]`.
 - `POST /inventory/thresholds` (editor+) `ThresholdCreate` → `ThresholdOut`.
 - `DELETE /inventory/thresholds/{id}` (manager) → 204.
@@ -112,9 +130,11 @@ branch on role: managers act directly; editors open a change-request dialog.
 - `GET /audit/my-items?period=day|week|month` (manager) → changes on items linked to the current manager in the period.
 
 ### Users (§8)
-- `GET /users` (viewer+), `GET /users/managers` (viewer+) → `UserBrief[]`.
+- `GET /users` (viewer+) → `UserOut[]`, `GET /users/managers` (viewer+) → `UserBrief[]`.
+  `UserOut = { id, full_name, email, role, is_active, created_at, login_hint_visible, has_login_hint_password }` — the hint password itself is never returned here, only whether one is published.
 - `POST /users` (manager) `{ email, full_name, password, role }`.
-- `PATCH /users/{id}` (manager) `{ full_name?, role?, is_active?, password? }`.
+- `PATCH /users/{id}` (manager) `{ full_name?, role?, is_active?, password?, login_hint_visible?, login_hint_password? }`.
+  `login_hint_password: ""` withdraws a published password (leaving an email-only shortcut); omitting the field leaves it untouched. Both hint fields land in the audit log.
 - `DELETE /users/{id}` (manager).
 
 ### Import / Export (§11)
@@ -125,7 +145,8 @@ branch on role: managers act directly; editors open a change-request dialog.
 ## Notification API (notification-service, port 8001)
 Validates the same Bearer JWT; derives the current user from `sub`.
 - `GET /notifications?unread_only=&limit=` → `Notification[]` (newest first) for the current user.
-  `Notification = { id, type, title, body, link, read, created_at }`.
+  `Notification = { id, type, title, body, payload, link, read, created_at }`.
+  `payload` is the source event's structured context (`null` for older rows). A `inventory.low_stock` alert carries `{ components: [{ threshold_id, name, card_type, tracking, version, current_quantity, min_quantity, shortfall }] }`, which the UI renders as a list — `body` holds the same list as plain text for email.
 - `GET /notifications/unread-count` → `{ count }`.
 - `POST /notifications/{id}/read` → 204.
 - `POST /notifications/read-all` → 204.
@@ -145,6 +166,10 @@ Event = {
 ```
 `EventType`: `change_request.submitted | change_request.approved |
 change_request.rejected | inventory.low_stock | item.state_changed`.
+
+`inventory.low_stock` is published as **one digest per recipient**, listing only
+the groups that recipient is responsible for (`recipients` therefore holds a
+single entry), with the components in `payload.components[]`.
 
 The `lattice_shared` package (already built) provides `EventBus` and `Event`:
 `from lattice_shared.events import EventBus, Event, EventType, Recipient`.

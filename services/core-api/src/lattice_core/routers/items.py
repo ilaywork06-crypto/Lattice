@@ -116,6 +116,7 @@ def list_items(
             card_type=i.card_type,
             version=i.version,
             serial=i.serial,
+            quantity=i.quantity,
             storage_status=i.storage_status,
             parent_id=i.parent_id,
             location_id=i.location_id,
@@ -175,6 +176,10 @@ async def update_item(
     item = _get(db, item_id)
     svc.update_item(db, item, data.model_dump(exclude_unset=True), user)
     db.commit()
+    # Editing a commercial card's quantity is now *the* way stock goes down, so
+    # a plain PATCH has to be able to trip the alert — creates and deletes alone
+    # no longer see every change to the numbers.
+    await _maybe_alert_low_stock(db, item)
     return get_item(item_id, db, user)
 
 

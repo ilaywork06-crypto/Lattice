@@ -22,8 +22,13 @@ def test_editor_cannot_mutate_directly(client, editor, a_setup):
 
 def test_inventory_summary(client, admin):
     s = client.get("/inventory/summary", headers=admin).json()
-    assert s["setups"] >= 1 and s["cards"] >= 10
-    assert s["cards_desiccator"] >= 1
+    assert s["setups"] >= 1 and s["assemblies"] >= 1
+    assert s["cards"] >= s["cards_desiccator"] >= 1
+    # The tile counts physical units, so it must equal the inventory table it
+    # summarises — a dashboard that disagrees with /inventory is exactly the
+    # "where does this number come from?" problem.
+    groups = client.get("/inventory/cards", headers=admin).json()
+    assert s["cards"] == sum(g["total"] for g in groups)
 
 
 def test_card_groups_grouped_by_version(client, admin):
@@ -181,6 +186,7 @@ def test_desiccator_endpoint_only_returns_desiccator_stock(client, admin):
             "type": "card",
             "name": "Bench-Only Card",
             "card_type": "company",
+            "serial": "BENCH-001",
             "storage_status": "in_use",
         },
     )
@@ -386,7 +392,10 @@ def test_create_with_children_cascades_location(client, admin):
     # a standalone card and assembly to be adopted
     card = client.post(
         "/items", headers=admin,
-        json={"type": "card", "name": "Adopt Card", "card_type": "company"},
+        json={
+            "type": "card", "name": "Adopt Card",
+            "card_type": "company", "serial": "ADOPT-001",
+        },
     ).json()
     asm = client.post(
         "/items", headers=admin, json={"type": "assembly", "name": "Adopt Assembly"},
@@ -415,7 +424,10 @@ def test_nested_link_cascades_whole_subtree(client, admin):
     # card inside assembly; then assembly moved into a setup at a new location
     card = client.post(
         "/items", headers=admin,
-        json={"type": "card", "name": "Deep Card", "card_type": "company"},
+        json={
+            "type": "card", "name": "Deep Card",
+            "card_type": "company", "serial": "DEEP-001",
+        },
     ).json()
     asm = client.post(
         "/items", headers=admin, json={"type": "assembly", "name": "Deep Assembly"},
@@ -466,7 +478,10 @@ def test_bulk_move_is_atomic(client, admin):
     ids = [
         client.post(
             "/items", headers=admin,
-            json={"type": "card", "name": f"Bulk Card {n}", "card_type": "company"},
+            json={
+                "type": "card", "name": f"Bulk Card {n}",
+                "card_type": "company", "serial": f"BULK-{n:03d}",
+            },
         ).json()["id"]
         for n in range(3)
     ]
@@ -484,7 +499,10 @@ def test_bulk_move_is_atomic(client, admin):
 def test_bulk_rejects_missing_state(client, admin):
     card = client.post(
         "/items", headers=admin,
-        json={"type": "card", "name": "Bulk State Card", "card_type": "company"},
+        json={
+            "type": "card", "name": "Bulk State Card",
+            "card_type": "company", "serial": "BULK-STATE-001",
+        },
     ).json()
     r = client.post(
         "/items/bulk",
@@ -532,6 +550,336 @@ def test_map_buildings_crud_and_permissions(client, admin, editor, viewer):
     # only managers may delete
     assert client.delete(f"/map/buildings/{bid}", headers=editor).status_code == 403
     assert client.delete(f"/map/buildings/{bid}", headers=admin).status_code == 204
+
+
+# ─────────────── §12 a commercial card is a quantity, not N rows ───────────────
+def test_commercial_card_carries_its_quantity_on_one_row(client, admin):
+    created = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "COTS RS-422 Adapter", "card_type": "commercial",
+            "quantity": 25, "storage_status": "desiccator",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["quantity"] == 25
+
+    group = next(
+        g for g in client.get("/inventory/cards", headers=admin).json()
+        if g["name"] == "COTS RS-422 Adapter"
+    )
+    # 25 units held on a single record — and the group says exactly that, which
+    # is the point: the number is explainable without counting rows by hand.
+    assert (group["total"], group["records"], group["desiccator"]) == (25, 1, 25)
+    assert group["tracking"] == "quantity"
+
+
+def test_a_model_is_split_by_version_and_the_parts_sum_to_the_whole(client, admin):
+    """One card *name* is many inventory rows — one per version/production batch.
+    So 5 boards under one name read as 3 + 2, and no single row ever says 5;
+    the parts adding up to the whole is the contract the UI's per-model subtotal
+    relies on. Reading a part as if it were the total is exactly the confusion
+    this endpoint has to make impossible."""
+    for version, count in (("1.0", 3), ("2.0", 2)):
+        for i in range(count):
+            r = client.post(
+                "/items", headers=admin,
+                json={
+                    "type": "card", "name": "Sum Check Board", "card_type": "company",
+                    "version": version, "serial": f"SUM-{version}-{i}",
+                },
+            )
+            assert r.status_code == 201, r.text
+
+    rows = client.get("/items?type=card&search=Sum Check Board", headers=admin).json()
+    groups = [
+        g for g in client.get("/inventory/cards", headers=admin).json()
+        if g["name"] == "Sum Check Board"
+    ]
+    assert sorted(g["total"] for g in groups) == [2, 3]
+    assert sum(g["total"] for g in groups) == len(rows) == 5
+
+
+def test_commercial_cards_are_no_longer_missing_from_inventory(client, admin):
+    """They were filtered out of every group, so their stock was simply absent."""
+    names = {g["name"] for g in client.get("/inventory/cards", headers=admin).json()}
+    assert "COTS Ethernet NIC" in names
+
+
+def test_summary_counts_units_not_rows(client, admin):
+    before = client.get("/inventory/summary", headers=admin).json()["cards"]
+    client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "COTS Resistor Pack", "card_type": "commercial",
+            "quantity": 50, "storage_status": "desiccator",
+        },
+    )
+    after = client.get("/inventory/summary", headers=admin).json()["cards"]
+    assert after == before + 50, "one row, fifty physical cards"
+
+
+def test_a_commercial_card_cannot_carry_a_serial(client, admin):
+    r = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "COTS With Serial",
+            "card_type": "commercial", "serial": "COTS-1",
+        },
+    )
+    assert r.status_code == 400
+    assert "quantity" in r.json()["detail"]
+
+
+def test_a_serialised_card_needs_a_serial_and_refuses_a_quantity(client, admin):
+    missing = client.post(
+        "/items", headers=admin,
+        json={"type": "card", "name": "Serial-less Board", "card_type": "unique"},
+    )
+    assert missing.status_code == 400
+    assert "must have a serial" in missing.json()["detail"]
+
+    batched = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "Batched Board", "card_type": "company",
+            "serial": "BATCH-1", "quantity": 10,
+        },
+    )
+    assert batched.status_code == 400
+    assert "per unit" in batched.json()["detail"]
+
+
+def test_a_card_without_a_card_type_is_refused(client, admin):
+    """Without one there is no answer to "is this counted by quantity or serial?"."""
+    r = client.post("/items", headers=admin, json={"type": "card", "name": "Untyped Card"})
+    assert r.status_code == 400
+    assert "card type" in r.json()["detail"]
+
+
+def test_switching_a_card_to_commercial_clears_its_stranded_serial(client, admin):
+    card = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "Reclassified Board",
+            "card_type": "company", "serial": "RECLASS-1",
+        },
+    ).json()
+    # A PATCH cannot clear a field by sending null, so the type switch has to.
+    r = client.patch(
+        f"/items/{card['id']}", headers=admin,
+        json={"card_type": "commercial", "quantity": 7},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["serial"] is None and r.json()["quantity"] == 7
+    # ...and the serial's disappearance is on the record, not silent (§10)
+    entries = client.get(f"/audit?item_id={card['id']}", headers=admin).json()
+    assert any("serial" in (e["details"].get("changed") or {}) for e in entries)
+
+
+def test_a_serial_is_unique_across_every_card_type(client, admin):
+    first = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "Serial Guard A",
+            "card_type": "company", "serial": "GUARD-1",
+        },
+    )
+    assert first.status_code == 201, first.text
+    dup = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "Serial Guard B",
+            "card_type": "unique", "serial": "GUARD-1",
+        },
+    )
+    assert dup.status_code == 400
+    assert "already used" in dup.json()["detail"]
+
+
+# ─────────────────────── unique names ───────────────────────
+def test_two_items_cannot_share_a_name(client, admin):
+    assert client.post(
+        "/items", headers=admin, json={"type": "assembly", "name": "Unique Name Module"}
+    ).status_code == 201
+
+    # same name, and the same name modulo case and padding, across types
+    for name in ("Unique Name Module", "  unique name module  "):
+        dup = client.post("/items", headers=admin, json={"type": "setup", "name": name})
+        assert dup.status_code == 400, name
+        assert "already used" in dup.json()["detail"]
+
+    # renaming an existing item onto a taken name is refused just the same
+    other = client.post(
+        "/items", headers=admin, json={"type": "assembly", "name": "Some Other Module"}
+    ).json()
+    assert client.patch(
+        f"/items/{other['id']}", headers=admin, json={"name": "Unique Name Module"}
+    ).status_code == 400
+
+
+def test_serialised_cards_may_share_a_name_but_quantity_cards_may_not(client, admin):
+    """A batch is many rows of one model; the serial is what tells them apart."""
+    for i in range(2):
+        r = client.post(
+            "/items", headers=admin,
+            json={
+                "type": "card", "name": "Batch Board", "card_type": "company",
+                "serial": f"BATCH-BOARD-{i}",
+            },
+        )
+        assert r.status_code == 201, r.text
+
+    # a quantity-tracked card, by contrast, is one row per real thing
+    assert client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "Single COTS Board",
+            "card_type": "commercial", "quantity": 3,
+        },
+    ).status_code == 201
+    dup = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "single cots board",
+            "card_type": "commercial", "quantity": 1,
+        },
+    )
+    assert dup.status_code == 400
+
+
+def test_duplicate_location_names_are_refused(client, admin):
+    assert client.post(
+        "/locations", headers=admin, json={"name": "Overflow Shelf"}
+    ).status_code == 201
+    dup = client.post("/locations", headers=admin, json={"name": " overflow shelf "})
+    assert dup.status_code == 400
+    assert "already exists" in dup.json()["detail"]
+
+
+# ─────────────────── §8 sign-in shortcuts (login page) ───────────────────
+def _user_id(client, admin, email: str) -> int:
+    return next(u["id"] for u in client.get("/users", headers=admin).json() if u["email"] == email)
+
+
+def test_login_hints_expose_only_what_a_manager_published(client, admin):
+    """The endpoint is unauthenticated by necessity — it feeds the login page —
+    so what it returns is exactly what a manager chose to publish, no more."""
+    public = client.get("/auth/login-hints")  # deliberately no token
+    assert public.status_code == 200
+    hints = {h["email"]: h for h in public.json()}
+    assert "dana@lattice.io" in hints, "the demo seed publishes the demo accounts"
+    assert hints["dana@lattice.io"]["password"] == "password"
+    assert set(hints["dana@lattice.io"]) == {"full_name", "email", "role", "password"}
+
+    dana_id = _user_id(client, admin, "dana@lattice.io")
+
+    # hidden → gone from the login page entirely
+    hidden = client.patch(f"/users/{dana_id}", headers=admin, json={"login_hint_visible": False})
+    assert hidden.status_code == 200
+    assert hidden.json()["login_hint_visible"] is False
+    assert "dana@lattice.io" not in {h["email"] for h in client.get("/auth/login-hints").json()}
+
+    # visible again but with the password withdrawn ("" clears it): the shortcut
+    # fills the email and the password still has to be typed
+    shown = client.patch(
+        f"/users/{dana_id}",
+        headers=admin,
+        json={"login_hint_visible": True, "login_hint_password": ""},
+    )
+    assert shown.json()["has_login_hint_password"] is False
+    published = client.get("/auth/login-hints").json()
+    assert next(h for h in published if h["email"] == "dana@lattice.io")["password"] is None
+
+    # ...and signing in with that account still works, so hiding the hint never
+    # touches the credentials themselves
+    assert client.post(
+        "/auth/login", data={"username": "dana@lattice.io", "password": "password"}
+    ).status_code == 200
+
+    # restore the demo state for the rest of the suite
+    client.patch(
+        f"/users/{dana_id}",
+        headers=admin,
+        json={"login_hint_visible": True, "login_hint_password": "password"},
+    )
+
+
+def test_a_deactivated_account_drops_off_the_login_page(client, admin):
+    created = client.post(
+        "/users", headers=admin,
+        json={
+            "email": "kiosk@lattice.io", "full_name": "Kiosk Demo",
+            "password": "kiosk1234", "role": "viewer",
+        },
+    ).json()
+    assert created["login_hint_visible"] is False, "new accounts are never published"
+
+    client.patch(
+        f"/users/{created['id']}", headers=admin,
+        json={"login_hint_visible": True, "login_hint_password": "kiosk1234"},
+    )
+    assert "kiosk@lattice.io" in {h["email"] for h in client.get("/auth/login-hints").json()}
+
+    client.patch(f"/users/{created['id']}", headers=admin, json={"is_active": False})
+    assert "kiosk@lattice.io" not in {h["email"] for h in client.get("/auth/login-hints").json()}
+
+
+def test_only_managers_may_publish_a_sign_in_shortcut(client, editor, admin):
+    amir_id = _user_id(client, admin, "amir@lattice.io")
+    r = client.patch(f"/users/{amir_id}", headers=editor, json={"login_hint_visible": False})
+    assert r.status_code == 403
+
+
+def test_publishing_a_shortcut_is_audited(client, admin):
+    amir_id = _user_id(client, admin, "amir@lattice.io")
+    client.patch(f"/users/{amir_id}", headers=admin, json={"login_hint_visible": False})
+    entry = next(
+        a for a in client.get("/audit", headers=admin).json() if a["action"] == "user.update"
+    )
+    assert entry["details"]["login_hint_visible"] is False
+    client.patch(f"/users/{amir_id}", headers=admin, json={"login_hint_visible": True})
+
+
+# ─────────────────── §12 low-stock alerts list their components ───────────────────
+def test_low_stock_alert_carries_the_component_list(client, admin, monkeypatch):
+    """It used to be one prose sentence per threshold, so a manager watching
+    several groups got several emails and had to read them to learn what was
+    short. One digest per recipient now, with the components as data."""
+    import asyncio
+
+    from lattice_core import events as events_mod
+    from lattice_core.database import SessionLocal
+    from lattice_core.services import inventory as inv
+
+    published = []
+
+    async def capture(event):
+        published.append(event)
+
+    monkeypatch.setattr(events_mod, "publish_event", capture)
+
+    with SessionLocal() as db:
+        lows = asyncio.run(inv.check_and_alert_low_stock(db))
+
+    assert lows, "the demo seed deliberately keeps groups under their minimum"
+    assert published
+
+    for event in published:
+        assert len(event.recipients) == 1, "one digest per recipient, not per threshold"
+        components = event.payload["components"]
+        assert components
+        for c in components:
+            assert {
+                "name", "card_type", "tracking", "version",
+                "current_quantity", "min_quantity", "shortfall",
+            } <= set(c)
+            assert c["current_quantity"] <= c["min_quantity"]
+            # the plain-text body lists them too, for the email
+            assert c["name"] in event.body
+
+    # a manager watching several short groups gets them in ONE notification
+    assert max(len(e.payload["components"]) for e in published) >= 2
 
 
 def test_default_floor_plan_backfills_into_an_already_seeded_db():

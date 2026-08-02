@@ -74,6 +74,12 @@ The core-api creates its schema and seeds an admin + demo data on first boot.
 
 ### Demo logins
 
+The sign-in screen offers these as one-click shortcuts. That list is **data, not
+code**: a manager toggles each account (and whether its password is pre-filled)
+under *Users & Permissions*, and with none published the section disappears
+entirely. Anything published is served unauthenticated — that is the point of
+the screen, and the reason nothing is published by default outside the demo seed.
+
 | Email | Password | Role | Notes |
 |-------|----------|------|-------|
 | `admin@lattice.io` | `admin1234` | manager | bootstrap admin |
@@ -107,8 +113,8 @@ npm run dev        # http://localhost:5173
 
 ### Tests
 ```bash
-uv run pytest services/core-api/tests -q            # core API (15 tests)
-uv run pytest services/notification-service/tests -q # notifications (7 tests)
+uv run pytest services/core-api/tests -q            # core API (52 tests)
+uv run pytest services/notification-service/tests -q # notifications (9 tests)
 uv run ruff check services packages                  # lint
 ```
 
@@ -118,17 +124,17 @@ uv run ruff check services packages                  # lint
 
 | # | Requirement | Where |
 |---|-------------|-------|
-| §2 | Item types: setups / assemblies / cards; commercial / company / unique cards; "linking" vs "linked" | `models.py` (`Item`, `ItemType`, `CardType`), self-referential `parent_id` |
+| §2 | Item types: setups / assemblies / cards; commercial / company / unique cards; "linking" vs "linked" | `models.py` (`Item`, `ItemType`, `CardType`, `CardTracking`), self-referential `parent_id`; unique names + per-card-type rules in `services/items.py` |
 | §3 | Link card→assembly/setup, assembly→setup; **moving a container cascades location to its contents**, moving a contained item does not | `services/items.py: move_item` (downward cascade), `link_item`/`validate_link` (allowed pairs) |
 | §4 | Bidirectional navigation between linked items | `ItemOut.parent` + `ItemOut.children` (clickable both ways in the UI) |
-| §5 | Setups: name, industry, project, location, team, **state + history**, description, DM"C, linked items, extra non-card items (part no. / serial / signed-by) | `Item`, `ExtraItem`, `StateHistory` |
+| §5 | Setups: name, industry, project, location, team, **state + history**, description, DAMATZ (דמ"צ), linked items, extra non-card items (part no. / serial / signed-by) | `Item`, `ExtraItem`, `StateHistory` |
 | §6 | Assemblies: same documentation + shows parent setup | `Item` (+ `parent` link) |
-| §7 | Cards: responsible, lead, production date, version, location, state+history, linked setups/assemblies, documents; count **in-use vs desiccator** | `Item` card fields, `Document`, `StorageStatus`, `/inventory/summary` |
-| §8 | Permissions: viewer / editor / manager | `models.UserRole`, `deps.py` role guards, `/users` |
+| §7 | Cards: responsible, lead, production date, version, location, state+history, linked setups/assemblies, documents; count **in-use vs desiccator** | `Item` card fields, `Document`, `StorageStatus`, `/inventory/summary` (all figures are unit sums) |
+| §8 | Permissions: viewer / editor / manager; managers also choose **which accounts (and whether their passwords) appear as shortcuts on the sign-in screen** | `models.UserRole`, `deps.py` role guards, `/users`, `User.login_hint_*`, `GET /auth/login-hints` |
 | §9 | Change-approval workflow: editor proposes (with description + reason) → managers notified (email + in-app) → approve → apply. Items can be **linked to specific managers** for targeted routing | `models.ChangeRequest`, `services/change_requests.py`, `item_managers` table |
 | §10 | Change log per item; manager log of changes on their linked items over day/week/month | `models.AuditLog`, `/audit`, `/audit/my-items?period=` |
 | §11 | Excel import (bulk) & export | `services/importexport.py`, `/data/{template,import,export}` |
-| §12 | Desiccator stock: quantities, breakdown by version & production date, per-serial for unique cards; **minimum-quantity alerts** (email + in-app to manager & editor) | `services/inventory.py`, `StockThreshold`, `/inventory/{cards,desiccator,thresholds,low-stock}` |
+| §12 | Desiccator stock: **an explicit quantity per commercial card**, breakdown by version & production date, per-serial for serialised cards; **minimum-quantity alerts** listing the short components (email + in-app to manager & editor) | `services/inventory.py`, `Item.quantity`, `StockThreshold`, `/inventory/{cards,desiccator,thresholds,low-stock}` |
 | Extras | Hierarchy **graph** page, **editable floor-plan map** (draw/move/resize buildings behind the location markers), **dark/light** mode | `/graph`, `/locations` (x,y), `/map/buildings`, frontend |
 
 The full HTTP + event contract is in [`docs/CONTRACT.md`](docs/CONTRACT.md).
@@ -165,12 +171,24 @@ lattice/
   cascade-on-move rule a single downward traversal.
 - **Location cascade is strictly downward.** Moving an item updates it and all
   descendants; it never touches ancestors — exactly matching §3.
-- **Every physical card is a row.** Quantities, version/date breakdowns and
-  desiccator counts are `GROUP BY` queries; unique cards additionally carry a
-  serial. Bulk Excel import handles large company-card batches.
+- **Two kinds of card, counted two ways.** A *commercial* card is a quantity of
+  interchangeable parts on a single row (`Item.quantity`, no serial); a
+  *company*/*unique* card is one row per physical board with a mandatory,
+  globally unique serial. Every stock figure is `SUM(quantity)` — serialised
+  cards pin it to 1, so one formula serves both — and each inventory group
+  reports *how* it was counted (`tracking`, `records`, `serials[]`) so a number
+  can always be explained. Bulk Excel import handles large batches of either.
+- **A name identifies one thing.** Live setups, assemblies and commercial cards
+  can't share a name (trimmed, case-insensitive). Serialised cards are the
+  deliberate exception: twenty boards off one run are twenty rows of the same
+  model, and the serial is what tells them apart.
 - **Mutations live in one place** (`services/items.py`). Managers call them
   directly; editors' change-requests call the *same* functions on approval — so
   the rules (link validity, fault-note requirement, cascade, audit) can't drift.
 - **Notifications are best-effort and decoupled.** core-api publishes to Redis
   and never blocks on it; the consumer is resilient (reconnect w/ backoff, email
   failures swallowed) so a mail outage never breaks the API.
+- **Alerts carry data, not prose.** A low-stock alert is one digest per
+  recipient listing exactly the components they own, as a structured
+  `payload.components[]` the UI renders as a table (the text body mirrors it for
+  email) — rather than one sentence-shaped email per threshold.

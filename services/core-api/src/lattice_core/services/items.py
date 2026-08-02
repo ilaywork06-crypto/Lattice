@@ -7,17 +7,19 @@ executor, so the rules live in exactly one place.
 
 from __future__ import annotations
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from lattice_core.models import (
-    CardType,
+    SERIAL_TRACKED_CARD_TYPES,
+    CardTracking,
     Item,
     ItemState,
     ItemType,
     StateHistory,
     StorageStatus,
     User,
+    card_tracking,
 )
 from lattice_core.services import catalog as catalog_svc
 from lattice_core.services.audit import record_audit
@@ -67,22 +69,119 @@ def validate_link(child: Item, parent: Item) -> None:
 
 
 def _check_unique_serial(db: Session, item: Item) -> None:
-    """A unique card's serial must be globally unique (data reliability, §2/§12)."""
-    if item.type != ItemType.card or item.card_type != CardType.unique:
-        return
-    if not item.serial:
+    """A serial identifies exactly one physical unit, system-wide (§2/§12)."""
+    if not item.serial or item.is_template:
         return
     clash = (
-        db.query(func.count(Item.id))
+        db.query(Item)
         .filter(
             Item.serial == item.serial,
             Item.id != (item.id or -1),
             Item.is_template.is_(False),
         )
-        .scalar()
+        .first()
     )
     if clash:
-        raise DomainError(f"Serial '{item.serial}' is already used by another unique card")
+        raise DomainError(
+            f"Serial '{item.serial}' is already used by {clash.type.value} "
+            f"'{clash.name}' (#{clash.id})"
+        )
+
+
+def _enforces_unique_name(item: Item) -> bool:
+    """Whether this item competes for its name.
+
+    Serial-tracked cards are deliberately exempt: twenty boards off one
+    production run are twenty rows of the *same model*, told apart by serial —
+    there the name describes the model, not the individual. Everything else
+    (setups, assemblies, quantity-tracked commercial cards) is one row per real
+    thing, so its name has to identify it unambiguously. Templates are blueprints
+    rather than physical items and never take part.
+    """
+    if item.is_template:
+        return False
+    if item.type == ItemType.card:
+        return card_tracking(item.card_type) is not CardTracking.serial
+    return True
+
+
+def _check_unique_name(db: Session, item: Item) -> None:
+    """No two live items may share a name (compared trimmed, case-insensitively)."""
+    if not _enforces_unique_name(item):
+        return
+    normalised = (item.name or "").strip().lower()
+    if not normalised:
+        return
+    clash = (
+        db.query(Item)
+        .filter(
+            func.lower(func.trim(Item.name)) == normalised,
+            Item.id != (item.id or -1),
+            Item.is_template.is_(False),
+            # The exemption above cuts both ways: a batch of serialised boards
+            # must not block a setup (or a commercial card) from taking a name.
+            or_(
+                Item.type != ItemType.card,
+                Item.card_type.is_(None),
+                Item.card_type.notin_(SERIAL_TRACKED_CARD_TYPES),
+            ),
+        )
+        .first()
+    )
+    if clash:
+        raise DomainError(
+            f"The name '{item.name.strip()}' is already used by {clash.type.value} "
+            f"'{clash.name}' (#{clash.id}). Names must be unique."
+        )
+
+
+def _enforce_card_rules(db: Session, item: Item, supplied: set[str]) -> None:
+    """Keep the two kinds of card honest (§2/§12).
+
+    A commercial card is a quantity of interchangeable parts on one row; a
+    company/unique card is one row per physical unit, identified by its serial.
+    Values the caller actually sent that contradict its card type are rejected
+    with an explanation; leftovers from a card type *change* are normalised
+    silently, since a PATCH cannot clear a field by sending ``null``.
+    """
+    if item.type != ItemType.card:
+        item.quantity = 1
+        return
+
+    tracking = card_tracking(item.card_type)
+    if tracking is None:
+        raise DomainError(
+            "A card must have a card type (commercial / company / unique) — it "
+            "decides whether the card is counted by quantity or by serial."
+        )
+
+    if tracking is CardTracking.quantity:
+        if "serial" in supplied and (item.serial or "").strip():
+            raise DomainError(
+                "A commercial card is counted by quantity, not per unit: leave "
+                "the serial empty and set the quantity instead."
+            )
+        item.serial = None
+        if item.quantity is None:
+            item.quantity = 1
+        if item.quantity < 1:
+            raise DomainError("Quantity must be at least 1.")
+        return
+
+    # Serial-tracked: one row *is* one unit, so the quantity column is pinned.
+    if "quantity" in supplied and (item.quantity or 1) != 1:
+        raise DomainError(
+            f"A {item.card_type.value} card is tracked per unit — add one card "
+            "per physical board (each with its own serial) instead of a quantity."
+        )
+    item.quantity = 1
+    item.serial = (item.serial or "").strip() or None
+    if item.serial is None and not item.is_template:
+        raise DomainError(
+            f"A {item.card_type.value} card must have a serial — it identifies "
+            "the individual board. Use a commercial card for quantity-only stock."
+        )
+    _check_unique_serial(db, item)
 
 
 def _default_storage(item: Item) -> StorageStatus | None:
@@ -109,7 +208,9 @@ def create_item(db: Session, data: dict, user: User) -> Item:
         raise DomainError(str(exc)) from exc
 
     item = Item(**{k: v for k, v in data.items() if hasattr(Item, k)})
-    _check_unique_serial(db, item)
+    item.name = (item.name or "").strip()
+    _enforce_card_rules(db, item, supplied=set(data))
+    _check_unique_name(db, item)
 
     if parent_id:
         parent = db.get(Item, parent_id)
@@ -160,7 +261,7 @@ def create_item(db: Session, data: dict, user: User) -> Item:
 _MUTABLE_FIELDS = {
     "name", "industry", "project", "team", "description", "dmz",
     "card_type", "responsible", "lead", "production_date", "version",
-    "serial", "storage_status",
+    "serial", "storage_status", "quantity",
 }
 
 
@@ -180,6 +281,8 @@ def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
     for field, value in data.items():
         if field not in _MUTABLE_FIELDS or value is None:
             continue
+        if field == "name":
+            value = value.strip()
         old = getattr(item, field)
         if old != value:
             changed[field] = [
@@ -195,8 +298,21 @@ def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
             catalog_svc.validate_item_catalog(db, item.project, item.industry)
         except catalog_svc.CatalogError as exc:
             raise DomainError(str(exc)) from exc
-    if "serial" in changed or "card_type" in changed:
-        _check_unique_serial(db, item)
+    # Always re-checked, not just when a card field moved: switching card_type
+    # is what strands a serial on a quantity card (or a quantity on a serialised
+    # one), and the check is the only place that cleans it up. Whatever it
+    # normalises is folded back into `changed` so the audit log tells the whole
+    # story rather than showing a serial that silently vanished (§10).
+    before = {"serial": item.serial, "quantity": item.quantity}
+    _enforce_card_rules(db, item, supplied=set(data))
+    for field, old in before.items():
+        new = getattr(item, field)
+        if old == new:
+            continue
+        changed.setdefault(field, [old, new])[1] = new
+
+    if "name" in changed or "card_type" in changed:
+        _check_unique_name(db, item)
 
     if manager_ids is not None:
         # Compare before writing. The edit form always sends `manager_ids`, so an
@@ -358,7 +474,3 @@ def delete_item(db: Session, item: Item, user: User) -> None:
         details={"type": item.type.value},
     )
     db.delete(item)
-
-
-# used by the low-stock check to know which card types we care about
-TRACKED_CARD_TYPES = (CardType.company, CardType.unique)

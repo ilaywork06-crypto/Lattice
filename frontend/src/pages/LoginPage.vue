@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { authApi } from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { extractError } from '@/api/client'
 import BrandLogo from '@/components/BrandLogo.vue'
 import { ROLE_COLORS, ROLE_LABELS } from '@/constants'
-import type { UserRole } from '@/api/types'
+import type { LoginHint } from '@/api/types'
 
 const auth = useAuthStore()
 const themeStore = useThemeStore()
@@ -21,22 +22,25 @@ const showPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
 
-interface Demo {
-  email: string
-  password: string
-  role: UserRole
-  name: string
-}
-const demos: Demo[] = [
-  { email: 'admin@lattice.io', password: 'admin1234', role: 'manager', name: 'Admin' },
-  { email: 'noa@lattice.io', password: 'password', role: 'manager', name: 'Noa' },
-  { email: 'dana@lattice.io', password: 'password', role: 'editor', name: 'Dana' },
-  { email: 'amir@lattice.io', password: 'password', role: 'viewer', name: 'Amir' },
-]
+// Which accounts are offered here is a manager's decision (Users & Permissions),
+// not a hard-coded list — so a deployment that shouldn't advertise any simply
+// has none, and the whole section disappears.
+const hints = ref<LoginHint[]>([])
 
-function fill(demo: Demo) {
-  email.value = demo.email
-  password.value = demo.password
+async function loadHints() {
+  try {
+    hints.value = await authApi.loginHints()
+  } catch {
+    // The shortcuts are a convenience; never block sign-in over them.
+    hints.value = []
+  }
+}
+
+function fill(hint: LoginHint) {
+  email.value = hint.email
+  // Only pre-filled where a manager published the password; otherwise the field
+  // is cleared and focus is left to the user to type it.
+  password.value = hint.password ?? ''
   error.value = ''
 }
 
@@ -57,6 +61,8 @@ async function submit() {
     loading.value = false
   }
 }
+
+onMounted(loadHints)
 </script>
 
 <template>
@@ -120,27 +126,29 @@ async function submit() {
                 </v-btn>
               </v-form>
 
-              <v-divider class="my-5">
-                <span class="text-caption text-medium-emphasis px-2">{{ $t('login.demoAccounts') }}</span>
-              </v-divider>
+              <template v-if="hints.length">
+                <v-divider class="my-5">
+                  <span class="text-caption text-medium-emphasis px-2">{{ $t('login.demoAccounts') }}</span>
+                </v-divider>
 
-              <div class="d-flex flex-wrap justify-center gap-2">
-                <v-chip
-                  v-for="demo in demos"
-                  :key="demo.email"
-                  :color="ROLE_COLORS[demo.role]"
-                  variant="tonal"
-                  size="small"
-                  class="font-weight-medium"
-                  @click="fill(demo)"
-                >
-                  <v-icon start icon="mdi-account" size="14" />
-                  {{ demo.name }} · {{ ROLE_LABELS[demo.role] }}
-                </v-chip>
-              </div>
-              <p class="text-center text-caption text-medium-emphasis mt-3">
-                {{ $t('login.demoHint') }}
-              </p>
+                <div class="d-flex flex-wrap justify-center gap-2">
+                  <v-chip
+                    v-for="hint in hints"
+                    :key="hint.email"
+                    :color="ROLE_COLORS[hint.role]"
+                    variant="tonal"
+                    size="small"
+                    class="font-weight-medium"
+                    @click="fill(hint)"
+                  >
+                    <v-icon start :icon="hint.password ? 'mdi-account-key' : 'mdi-account'" size="14" />
+                    {{ hint.full_name }} · {{ ROLE_LABELS[hint.role] }}
+                  </v-chip>
+                </div>
+                <p class="text-center text-caption text-medium-emphasis mt-3">
+                  {{ hints.some((h) => h.password) ? $t('login.demoHint') : $t('login.demoHintEmailOnly') }}
+                </p>
+              </template>
             </v-card-text>
           </v-card>
         </v-col>

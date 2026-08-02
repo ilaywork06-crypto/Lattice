@@ -2,7 +2,7 @@
 
 One endpoint answers the app-wide search box. It looks through the meaningful
 text on items (name, serial, version, project, industry, team, description,
-DM"C), plus locations and — for managers only — users, then ranks results so the
+DAMATZ), plus locations and — for managers only — users, then ranks results so the
 most relevant (exact, then prefix, then substring) float to the top.
 """
 

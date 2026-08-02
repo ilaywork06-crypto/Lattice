@@ -25,6 +25,7 @@ import {
   TYPE_LABELS,
   formatDate,
   formatDateTime,
+  isQuantityTracked,
 } from '@/constants'
 import type {
   AuditOut,
@@ -123,7 +124,11 @@ const overviewFields = computed(() => {
       { label: t('fields.responsible'), value: it.responsible || '—', icon: 'mdi-account' },
       { label: t('fields.lead'), value: it.lead || '—', icon: 'mdi-account-star' },
       { label: t('fields.version'), value: it.version || '—', icon: 'mdi-tag-outline' },
-      { label: t('fields.serial'), value: it.serial || '—', icon: 'mdi-barcode' },
+      // Only one of the two applies — showing the other as "—" is what made the
+      // two kinds of card look like the same thing with missing data.
+      isQuantityTracked(it.card_type)
+        ? { label: t('fields.quantity'), value: String(it.quantity ?? 1), icon: 'mdi-numeric' }
+        : { label: t('fields.serial'), value: it.serial || '—', icon: 'mdi-barcode' },
       { label: t('fields.productionDate'), value: formatDate(it.production_date), icon: 'mdi-calendar' },
     )
   }
@@ -363,6 +368,7 @@ function prefillFromItem(): Partial<ItemCreate> {
     version: it.version,
     storage_status: it.storage_status,
     serial: null, // a copy must get its own serial
+    quantity: 1, // ...and a copy of a commercial card starts at a single unit
     manager_ids: it.managers.map((m) => m.id),
   }
 }

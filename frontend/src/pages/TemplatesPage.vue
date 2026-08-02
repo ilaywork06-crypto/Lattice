@@ -82,7 +82,10 @@ async function useTemplate(tpl: ItemListOut) {
       lead: full.lead,
       version: full.version,
       storage_status: full.storage_status,
+      // a serialised card needs its own serial; a commercial one inherits the
+      // template's quantity as a starting point
       serial: null,
+      quantity: full.quantity,
       manager_ids: full.managers.map((m) => m.id),
     }
     fromOpen.value = true

@@ -9,6 +9,7 @@ from typing import Annotated
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
 from lattice_core.models import (
+    CardTracking,
     CardType,
     CatalogCategory,
     ChangeAction,
@@ -61,6 +62,9 @@ class UserBrief(BaseModel):
 class UserOut(UserBrief):
     is_active: bool
     created_at: datetime
+    login_hint_visible: bool = False
+    # Whether a password is published alongside the shortcut — never the value.
+    has_login_hint_password: bool = False
 
 
 class UserCreate(BaseModel):
@@ -75,6 +79,24 @@ class UserUpdate(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     password: Password | None = None
+    # Offer this account on the sign-in screen (see LoginHintOut).
+    login_hint_visible: bool | None = None
+    # Password to pre-fill with the shortcut. `""` clears it, leaving an account
+    # whose email is filled in but whose password still has to be typed.
+    login_hint_password: str | None = None
+
+
+class LoginHintOut(BaseModel):
+    """A sign-in shortcut, served **unauthenticated** to the login page.
+
+    Only accounts a manager marked visible appear here, and `password` is filled
+    in only where a manager explicitly published one.
+    """
+
+    full_name: str
+    email: EmailStr
+    role: UserRole
+    password: str | None = None
 
 
 # ─────────────────────────── Locations ───────────────────────────
@@ -207,6 +229,7 @@ class ItemListOut(BaseModel):
     card_type: CardType | None = None
     version: str | None = None
     serial: str | None = None
+    quantity: int = 1
     storage_status: StorageStatus | None = None
     parent_id: int | None = None
     location_id: int | None = None
@@ -236,6 +259,9 @@ class ItemCreate(BaseModel):
     production_date: date | None = None
     version: str | None = None
     serial: str | None = None
+    # Commercial cards only: how many interchangeable units this row holds.
+    # Serial-tracked cards are one row per unit and must leave it at 1.
+    quantity: int = Field(default=1, ge=1)
     storage_status: StorageStatus | None = None
     # linked manager ids
     manager_ids: list[int] = Field(default_factory=list)
@@ -257,6 +283,7 @@ class ItemUpdate(BaseModel):
     production_date: date | None = None
     version: str | None = None
     serial: str | None = None
+    quantity: int | None = Field(default=None, ge=1)
     storage_status: StorageStatus | None = None
     location_id: int | None = None
     state: ItemState | None = None
@@ -286,6 +313,7 @@ class ItemOut(BaseModel):
     production_date: date | None
     version: str | None
     serial: str | None
+    quantity: int = 1
     storage_status: StorageStatus | None
     created_at: datetime
     updated_at: datetime
@@ -372,12 +400,17 @@ class ThresholdCreate(BaseModel):
 class ThresholdOut(ThresholdCreate):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    tracking: CardTracking | None = None
     current_quantity: int = 0
     is_low: bool = False
 
 
 class InventoryGroup(BaseModel):
     card_type: CardType
+    # How `total` was arrived at: summed quantities on one (or few) commercial
+    # records, or one row per serialised unit. The UI shows this so nobody has
+    # to guess where the number came from.
+    tracking: CardTracking | None = None
     name: str
     version: str | None = None
     production_date: date | None = None
@@ -385,6 +418,7 @@ class InventoryGroup(BaseModel):
     in_use: int
     desiccator: int
     assembled: int
+    records: int = 0
     serials: list[str] = Field(default_factory=list)
 
 

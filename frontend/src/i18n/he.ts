@@ -107,6 +107,10 @@ export default {
       company: 'מדור',
       unique: 'ייחודי',
     },
+    tracking: {
+      quantity: 'לפי כמות',
+      serial: 'לפי סיריאלי',
+    },
     storage: {
       assembled: 'מורכב',
       in_use: 'בשימוש',
@@ -273,6 +277,7 @@ export default {
     brandSubtitle: 'ניהול ומעקב אחר חומרה',
     demoAccounts: 'חשבונות דמו',
     demoHint: 'לחצו על תגית למילוי אוטומטי של הפרטים, ואז כניסה.',
+    demoHintEmailOnly: 'לחצו על תגית למילוי האימייל, והזינו את הסיסמה.',
   },
 
   dash: {
@@ -361,13 +366,21 @@ export default {
     desiccator: 'דסיקטור',
     cols: {
       produced: 'יוצר',
+      countedBy: 'שיטת ספירה',
+      records: 'רשומות',
       total: 'סה״כ',
       inUse: 'בשימוש',
       desiccator: 'דסיקטור',
       assembled: 'מורכב',
     },
-    uniqueSerials: 'מספרים סידוריים ייחודיים',
+    uniqueSerials: 'מספרים סידוריים',
     noSerials: 'לא מנוהלים סיריאלים פרטניים לקבוצה זו.',
+    modelTotal: 'סה״כ בשם הזה, מפולג ל־{n} שורות לפי גרסה ואצוות ייצור',
+    modelDesiccator: '{n} בדסיקטור',
+    explainQuantity:
+      'סה״כ {total} יחידות, המוזנות ידנית על {records} רשומות כרטיס — כרטיס מסחרי נספר לפי כמות, לא לפי מספר השורות.',
+    explainSerial:
+      'סה״כ {total} יחידות = {records} רשומות כרטיס, אחת לכל יחידה פיזית. הסיריאלים שמרכיבים את המספר:',
     noInventory: 'לא נמצא מלאי',
     thresholdsTitle: 'ספי מלאי',
     lowCount: '{n} נמוכים',
@@ -417,6 +430,10 @@ export default {
     markAllToast: 'כל ההתראות סומנו כנקראו',
     allCaught: 'הכל מעודכן',
     allCaughtHint: 'אין התראות להצגה כרגע.',
+    lowStock: {
+      short: 'חסרות {n}',
+      hint: 'נוכחי / מינימום לכל רכיב. לחצו לפתיחת עמוד המלאי.',
+    },
   },
 
   users: {
@@ -439,6 +456,17 @@ export default {
     created: 'המשתמש נוצר',
     deleted: 'המשתמש נמחק',
     requiredFields: 'אימייל, שם וסיסמה הם שדות חובה',
+    loginHint: 'קיצור דרך בעמוד הכניסה',
+    loginHintVisible: 'הצג חשבון זה בעמוד הכניסה',
+    loginHintWarning:
+      'עמוד הכניסה נגיש ללא הזדהות — כל חשבון שתסמנו כגלוי, וכל סיסמה שתפרסמו איתו, יהיו חשופים לכל מי שמגיע לעמוד.',
+    loginHintPassword: 'סיסמה למילוי אוטומטי (רשות)',
+    loginHintPasswordSet: 'סיסמה חדשה למילוי אוטומטי (מפורסמת כרגע)',
+    loginHintPasswordHint: 'אם תשאירו ריק — הקיצור ימלא רק את האימייל, והסיסמה תוקלד ידנית.',
+    loginHintClear: 'הפסק לפרסם את הסיסמה',
+    hintWithPassword: 'אימייל + סיסמה',
+    hintEmailOnly: 'אימייל בלבד',
+    hintHidden: 'מוסתר',
   },
 
   loc: {
@@ -579,7 +607,16 @@ export default {
     cardDetails: 'פרטי כרטיס',
     catalogEmpty: 'אין עדיין ערכים — מנהל יכול להוסיף בקטלוג.',
     templateNotice: 'תבניות הן שלדים לשימוש חוזר. הן אינן חלק מההיררכיה, המלאי או המפה.',
-    serialUniqueHint: 'חייב להיות ייחודי בין כל הכרטיסים הייחודיים.',
+    serialUniqueHint: 'חייב להיות ייחודי בין כל הכרטיסים במערכת.',
+    serialReq: 'סיריאלי *',
+    serialRequired: 'סיריאלי הוא שדה חובה בכרטיס שנספר לפי יחידות',
+    quantityReq: 'כמות *',
+    quantityHint: 'מספר היחידות שהרשומה הזו מייצגת.',
+    quantityMin: 'הכמות חייבת להיות 1 לפחות',
+    quantityCardNotice:
+      'כרטיס מסחרי נספר לפי כמות: רשומה אחת שמחזיקה את כל המלאי, בלי סיריאלי.',
+    serialCardNotice:
+      'כרטיס זה נספר לפי יחידות: רשומה אחת לכל כרטיס פיזי, עם סיריאלי ייחודי משלו.',
   },
 
   search: {

@@ -1,4 +1,5 @@
 import type {
+  CardTracking,
   CardType,
   ChangeAction,
   ChangeStatus,
@@ -52,6 +53,21 @@ export const ITEM_TYPES: ItemType[] = ['setup', 'assembly', 'card']
 export const CARD_TYPES: CardType[] = ['commercial', 'company', 'unique']
 
 export const CARD_TYPE_LABELS = labelMap<CardType>('cardType')
+
+// Mirrors `CARD_TRACKING` in the backend's models.py. A commercial card is a
+// quantity of interchangeable parts on one row; the others are one row per
+// physical board, identified by a mandatory serial.
+export const CARD_TRACKING: Record<CardType, CardTracking> = {
+  commercial: 'quantity',
+  company: 'serial',
+  unique: 'serial',
+}
+
+export const TRACKING_LABELS = labelMap<CardTracking>('tracking')
+
+export function isQuantityTracked(cardType?: CardType | null): boolean {
+  return !!cardType && CARD_TRACKING[cardType] === 'quantity'
+}
 
 export const STORAGE_STATUSES: StorageStatus[] = ['assembled', 'in_use', 'desiccator']
 

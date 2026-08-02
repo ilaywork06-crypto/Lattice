@@ -8,13 +8,13 @@ import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ConfirmDialog from '@/components/dialogs/ConfirmDialog.vue'
 import { ROLE_COLORS, ROLE_LABELS } from '@/constants'
-import type { UserBrief, UserRole } from '@/api/types'
+import type { User, UserRole } from '@/api/types'
 
 const auth = useAuthStore()
 const ui = useUiStore()
 const { t } = useI18n({ useScope: 'global' })
 
-const users = ref<UserBrief[]>([])
+const users = ref<User[]>([])
 const loading = ref(false)
 const search = ref('')
 
@@ -24,6 +24,7 @@ const headers = computed(() => [
   { title: t('fields.name'), key: 'full_name' },
   { title: t('users.email'), key: 'email' },
   { title: t('users.role'), key: 'role', width: 160 },
+  { title: t('users.loginHint'), key: 'login_hint_visible', width: 190 },
   { title: '', key: 'actions', sortable: false, align: 'end', width: 120 },
 ])
 
@@ -40,7 +41,7 @@ async function load() {
 
 // ---- Create / edit dialog -------------------------------------------------
 const dialog = ref(false)
-const editing = ref<UserBrief | null>(null)
+const editing = ref<User | null>(null)
 const saving = ref(false)
 const form = reactive<{
   email: string
@@ -48,7 +49,24 @@ const form = reactive<{
   password: string
   role: UserRole
   is_active: boolean
-}>({ email: '', full_name: '', password: '', role: 'viewer', is_active: true })
+  login_hint_visible: boolean
+  login_hint_password: string
+  // The stored hint password is never read back, so the field starts blank and
+  // only overwrites when the manager types something — this tracks whether one
+  // is already published, to label the field and to allow withdrawing it.
+  had_login_hint_password: boolean
+  clear_login_hint_password: boolean
+}>({
+  email: '',
+  full_name: '',
+  password: '',
+  role: 'viewer',
+  is_active: true,
+  login_hint_visible: false,
+  login_hint_password: '',
+  had_login_hint_password: false,
+  clear_login_hint_password: false,
+})
 
 function openCreate() {
   editing.value = null
@@ -57,16 +75,26 @@ function openCreate() {
   form.password = ''
   form.role = 'viewer'
   form.is_active = true
+  form.login_hint_visible = false
+  form.login_hint_password = ''
+  form.had_login_hint_password = false
+  form.clear_login_hint_password = false
   dialog.value = true
 }
 
-function openEdit(u: UserBrief) {
+function openEdit(u: User) {
   editing.value = u
   form.email = u.email
   form.full_name = u.full_name
   form.password = ''
   form.role = u.role
-  form.is_active = true
+  // Was hard-coded to `true`, so opening the dialog on a disabled account and
+  // saving silently re-enabled it.
+  form.is_active = u.is_active
+  form.login_hint_visible = u.login_hint_visible
+  form.login_hint_password = ''
+  form.had_login_hint_password = u.has_login_hint_password
+  form.clear_login_hint_password = false
   dialog.value = true
 }
 
@@ -79,6 +107,11 @@ async function save() {
         role: form.role,
         is_active: form.is_active,
         password: form.password.trim() || undefined,
+        login_hint_visible: form.login_hint_visible,
+        // '' withdraws the published password; `undefined` leaves it as it is.
+        login_hint_password: form.clear_login_hint_password
+          ? ''
+          : form.login_hint_password.trim() || undefined,
       })
       ui.success(t('users.updated'))
     } else {
@@ -105,7 +138,7 @@ async function save() {
 }
 
 // ---- Delete ---------------------------------------------------------------
-const removeUser = ref<UserBrief | null>(null)
+const removeUser = ref<User | null>(null)
 async function confirmRemove() {
   if (!removeUser.value) return
   try {
@@ -171,6 +204,18 @@ onMounted(load)
             {{ ROLE_LABELS[item.role] }}
           </v-chip>
         </template>
+        <template #item.login_hint_visible="{ item }">
+          <v-chip
+            v-if="item.login_hint_visible"
+            size="x-small"
+            variant="tonal"
+            color="primary"
+            :prepend-icon="item.has_login_hint_password ? 'mdi-account-key' : 'mdi-account'"
+          >
+            {{ item.has_login_hint_password ? $t('users.hintWithPassword') : $t('users.hintEmailOnly') }}
+          </v-chip>
+          <span v-else class="text-caption text-medium-emphasis">{{ $t('users.hintHidden') }}</span>
+        </template>
         <template #item.actions="{ item }">
           <v-btn icon="mdi-pencil" size="small" variant="text" @click="openEdit(item)" />
           <v-btn
@@ -222,6 +267,47 @@ onMounted(load)
             hide-details
             density="comfortable"
           />
+
+          <template v-if="editing">
+            <v-divider class="my-4" />
+            <div class="text-overline text-medium-emphasis">{{ $t('users.loginHint') }}</div>
+            <v-alert
+              type="warning"
+              variant="tonal"
+              density="compact"
+              class="mb-3"
+              icon="mdi-shield-alert-outline"
+            >
+              {{ $t('users.loginHintWarning') }}
+            </v-alert>
+            <v-switch
+              v-model="form.login_hint_visible"
+              :label="$t('users.loginHintVisible')"
+              color="primary"
+              hide-details
+              density="comfortable"
+              class="mb-2"
+            />
+            <template v-if="form.login_hint_visible">
+              <v-text-field
+                v-model="form.login_hint_password"
+                :label="form.had_login_hint_password ? $t('users.loginHintPasswordSet') : $t('users.loginHintPassword')"
+                :hint="$t('users.loginHintPasswordHint')"
+                persistent-hint
+                :disabled="form.clear_login_hint_password"
+                prepend-inner-icon="mdi-form-textbox-password"
+                class="mb-1"
+              />
+              <v-checkbox
+                v-if="form.had_login_hint_password"
+                v-model="form.clear_login_hint_password"
+                :label="$t('users.loginHintClear')"
+                color="warning"
+                hide-details
+                density="compact"
+              />
+            </template>
+          </template>
         </v-card-text>
         <v-divider />
         <v-card-actions class="pa-3">

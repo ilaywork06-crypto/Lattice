@@ -44,6 +44,7 @@ def _persist_notifications(event: Event) -> int:
                     type=event.type.value,
                     title=event.title,
                     body=event.body,
+                    payload=event.payload or None,
                     link=event.link,
                 )
             )
