@@ -403,14 +403,26 @@ class CatalogOption(Base):
 
 
 class StockThreshold(Base):
-    """Minimum-quantity alerting per card group (requirement §12)."""
+    """Minimum-quantity alerting per card group (requirement §12).
+
+    A threshold is created *from an existing card*, never from a typed-in name:
+    ``item_id`` records which one. What it watches is still the whole group —
+    ``(card_type, name, version)``, so units added later count towards it — but
+    keeping the origin means an alert can point at a real card in the system
+    instead of quoting a string somebody typed.
+    """
 
     __tablename__ = "stock_thresholds"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # The card this was set up from. SET NULL rather than CASCADE: deleting that
+    # card must not silently delete the stock rule watching its model.
+    item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     card_type: Mapped[CardType] = mapped_column(Enum(CardType))
-    # Optional narrowing of the group the threshold applies to.
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # `None` means "every version of this model" (the group is then name-wide).
     version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     min_quantity: Mapped[int] = mapped_column(Integer, default=0)
     # Extra recipients (besides linked managers) for the low-stock alert.

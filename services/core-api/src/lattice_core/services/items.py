@@ -352,10 +352,25 @@ def move_item(
 ) -> Item:
     """Move an item to a new location.
 
-    Cascades *downward* to every descendant — moving a linking item drags all
-    of its linked items. Moving a leaf (a linked card) affects nothing else,
-    which is exactly the behaviour required by §3.
+    Cascades *downward* to every descendant — moving a container drags all of
+    its contents (§3). A **linked item cannot be moved on its own**: being
+    linked means it physically sits inside its parent, so it is wherever the
+    parent is. The only honest way to relocate it is to move the parent, or to
+    unlink it first — and the error says which (§3).
     """
+    if item.parent_id is not None:
+        parent = db.get(Item, item.parent_id)
+        where = (
+            f"{parent.type.value} '{parent.name}' (#{parent.id})"
+            if parent is not None
+            else f"item #{item.parent_id}"
+        )
+        raise DomainError(
+            f"'{item.name}' sits inside {where}, so it has no location of its "
+            f"own. Move {where} instead — everything inside it follows — or "
+            f"unlink '{item.name}' first if it has physically come out."
+        )
+
     old_location = item.location_id
     item.location_id = location_id
 
@@ -412,6 +427,56 @@ def link_item(db: Session, child: Item, parent: Item, user: User) -> Item:
         details={"parent_id": parent.id, "parent_name": parent.name, "cascaded": cascaded},
     )
     return child
+
+
+def set_children(db: Session, parent: Item, child_ids: list[int], user: User) -> Item:
+    """Make the parent's contents exactly ``child_ids`` (§6/§8).
+
+    Contents could only be chosen while *creating* a container, which left no
+    way to correct a setup after the fact. Everything is validated before
+    anything is written, so a bad id can't leave the tree half-edited, and the
+    add/remove both go through link/unlink — the cascade and the audit trail
+    behave exactly as they do anywhere else.
+    """
+    if parent.is_template:
+        raise DomainError("Templates cannot take part in the hierarchy")
+
+    desired = list(dict.fromkeys(child_ids))
+    current = {c.id for c in parent.children}
+
+    to_add: list[Item] = []
+    for cid in desired:
+        if cid in current:
+            continue
+        child = db.get(Item, cid)
+        if child is None:
+            raise DomainError(f"Item {cid} not found")
+        validate_link(child, parent)
+        to_add.append(child)
+    # Snapshot: unlinking mutates `parent.children` as we walk it.
+    to_remove = [c for c in list(parent.children) if c.id not in set(desired)]
+
+    for child in to_remove:
+        unlink_item(db, child, user)
+    for child in to_add:
+        link_item(db, child, parent, user)
+
+    if to_add or to_remove:
+        record_audit(
+            db,
+            item=parent,
+            action="update",
+            summary=(
+                f"Updated contents of {parent.type.value} '{parent.name}' "
+                f"(+{len(to_add)} / -{len(to_remove)})"
+            ),
+            user=user,
+            details={
+                "added": [c.id for c in to_add],
+                "removed": [c.id for c in to_remove],
+            },
+        )
+    return parent
 
 
 def unlink_item(db: Session, child: Item, user: User) -> Item:

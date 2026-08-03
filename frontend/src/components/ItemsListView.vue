@@ -272,8 +272,16 @@ const bulkStateNoteRequired = computed(() => {
     (i) => selected.value.includes(i.id) && i.state === 'faulty',
   )
 })
+// Linked items have no location of their own — the server refuses to move them
+// and rolls the whole batch back, so say so before the round-trip (§3).
+const selectedLinked = computed(() =>
+  items.value.filter((i) => selected.value.includes(i.id) && i.parent_id),
+)
+
 const bulkConfirmDisabled = computed(() => {
-  if (bulkMode.value === 'move') return bulkLocationId.value == null
+  if (bulkMode.value === 'move') {
+    return bulkLocationId.value == null || selectedLinked.value.length > 0
+  }
   if (bulkMode.value === 'state') return bulkState.value == null || (bulkStateNoteRequired.value && !bulkNote.value.trim())
   return false
 })
@@ -512,6 +520,19 @@ onMounted(load)
             :label="$t('fields.location')"
             :items="locations.map((l) => ({ title: l.name, value: l.id }))"
           />
+          <v-alert
+            v-if="selectedLinked.length"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mb-2"
+            icon="mdi-map-marker-off-outline"
+          >
+            {{ $t('items.bulk.moveLinked', { n: selectedLinked.length }) }}
+            <div class="text-caption mt-1">
+              {{ selectedLinked.map((i) => i.name).join(' · ') }}
+            </div>
+          </v-alert>
           <v-alert type="info" variant="tonal" density="compact">{{ $t('items.bulk.moveHint') }}</v-alert>
         </v-card-text>
         <v-divider />

@@ -73,33 +73,108 @@ def test_move_cascades_to_children(client, admin, manager, a_setup):
         assert child["location_id"] == 2
 
 
-def test_edit_form_can_change_location_and_it_cascades(client, admin):
+def test_edit_form_can_change_location_and_it_cascades(client, admin, a_setup):
     """The edit dialog sends `location_id` in its PATCH body alongside the other
     fields. It used to be dropped silently (absent from ItemUpdate), so the save
     reported success while the item never moved."""
-    assembly = client.get("/items?type=assembly", headers=admin).json()[0]
-    aid = assembly["id"]
-    before = client.get(f"/items/{aid}", headers=admin).json()
-    assert before["children"], "need an assembly with cards to prove the cascade"
+    before = client.get(f"/items/{a_setup}", headers=admin).json()
+    assert before["children"], "need a container with contents to prove the cascade"
     target = 3 if before["location_id"] != 3 else 2
 
     r = client.patch(
-        f"/items/{aid}",
+        f"/items/{a_setup}",
         headers=admin,
         json={"name": before["name"], "location_id": target},
     )
     assert r.status_code == 200, r.text
     assert r.json()["location_id"] == target
 
-    after = client.get(f"/items/{aid}", headers=admin).json()
+    after = client.get(f"/items/{a_setup}", headers=admin).json()
     assert after["location_id"] == target
     # a container drags its contents (§3) — the plain field write would not have
     for child in after["children"]:
-        assert child["location_id"] == target, "cards left behind at the old location"
+        assert child["location_id"] == target, "contents left behind at the old location"
+        nested = client.get(f"/items/{child['id']}", headers=admin).json()["children"]
+        for grandchild in nested:
+            assert grandchild["location_id"] == target, "the cascade stopped one level down"
 
     # and the move is auditable, not silent
-    actions = [a["action"] for a in client.get(f"/audit?item_id={aid}", headers=admin).json()]
+    actions = [a["action"] for a in client.get(f"/audit?item_id={a_setup}", headers=admin).json()]
     assert "move" in actions
+
+
+def test_a_linked_item_cannot_be_moved_on_its_own(client, admin, a_setup):
+    """Linked means physically *inside*: the contained item has no location of
+    its own, so the only honest move is the container's — and the refusal has to
+    name the item to move instead."""
+    setup = client.get(f"/items/{a_setup}", headers=admin).json()
+    child = setup["children"][0]
+
+    direct = client.post(f"/items/{child['id']}/move", headers=admin, json={"location_id": 5})
+    assert direct.status_code == 400
+    assert setup["name"] in direct.json()["detail"], "the error must say what to move"
+
+    # the edit form's location field is refused the same way, and changes nothing
+    patched = client.patch(f"/items/{child['id']}", headers=admin, json={"location_id": 5})
+    assert patched.status_code == 400
+    still = client.get(f"/items/{child['id']}", headers=admin).json()
+    assert still["location_id"] == setup["location_id"]
+
+    # taking it out of the container makes it independent again
+    client.post(f"/items/{child['id']}/unlink", headers=admin)
+    freed = client.post(f"/items/{child['id']}/move", headers=admin, json={"location_id": 5})
+    assert freed.status_code == 200, freed.text
+
+    client.post(f"/items/{child['id']}/link", headers=admin, json={"parent_id": a_setup})
+
+
+def test_container_contents_are_editable_after_creation(client, admin):
+    """Contents could only be chosen while creating a container, so a setup
+    assembled by mistake could never be corrected (§6/§8)."""
+    setup = client.post(
+        "/items", headers=admin,
+        json={"type": "setup", "name": "Contents Edit Setup", "location_id": 4},
+    ).json()
+    a, b = (
+        client.post(
+            "/items", headers=admin,
+            json={
+                "type": "card", "name": f"Contents Card {suffix}",
+                "card_type": "company", "serial": f"CE-{suffix}",
+            },
+        ).json()
+        for suffix in ("A", "B")
+    )
+
+    added = client.put(
+        f"/items/{setup['id']}/children", headers=admin,
+        json={"child_ids": [a["id"], b["id"]]},
+    )
+    assert added.status_code == 200, added.text
+    assert {c["id"] for c in added.json()["children"]} == {a["id"], b["id"]}
+    # adopted items follow the container's location (§9)
+    assert client.get(f"/items/{a['id']}", headers=admin).json()["location_id"] == 4
+
+    # dropping one unlinks it — it is not deleted
+    kept = client.put(
+        f"/items/{setup['id']}/children", headers=admin, json={"child_ids": [b["id"]]}
+    )
+    assert {c["id"] for c in kept.json()["children"]} == {b["id"]}
+    freed = client.get(f"/items/{a['id']}", headers=admin).json()
+    assert freed["parent_id"] is None and freed["storage_status"] == "desiccator"
+
+    # an illegal member is refused *before* anything is written, so the existing
+    # contents survive the failed edit intact
+    other = client.post(
+        "/items", headers=admin, json={"type": "setup", "name": "Contents Other Setup"}
+    ).json()
+    bad = client.put(
+        f"/items/{setup['id']}/children", headers=admin,
+        json={"child_ids": [b["id"], other["id"]]},
+    )
+    assert bad.status_code == 400
+    unchanged = client.get(f"/items/{setup['id']}", headers=admin).json()
+    assert {c["id"] for c in unchanged["children"]} == {b["id"]}
 
 
 def test_edit_form_can_change_state_and_keeps_the_faulty_note_rule(client, admin, a_setup):
@@ -335,7 +410,7 @@ def test_manager_only_user_management(client, editor):
 
 
 # ─────────────────────── §2 admin-managed catalogs ───────────────────────
-def test_catalog_seeded_and_enforced(client, admin):
+def test_catalog_values_are_enforced(client, admin):
     projects = client.get("/catalog?category=project", headers=admin).json()
     values = {p["value"] for p in projects}
     assert {"Falcon", "Sparrow", "Horizon"} <= values
@@ -526,10 +601,10 @@ def test_global_search_ranks_and_scopes(client, admin, viewer):
 
 # ─────────────────────── editable map background ───────────────────────
 def test_map_buildings_crud_and_permissions(client, admin, editor, viewer):
-    # seeded default floor-plan buildings are readable by everyone
-    seeded = client.get("/map/buildings", headers=viewer).json()
-    assert len(seeded) >= 6
-    assert {"Lab A", "Assembly Hall"} <= {b["name"] for b in seeded}
+    # the floor plan is readable by everyone
+    plan = client.get("/map/buildings", headers=viewer).json()
+    assert len(plan) >= 6
+    assert {"Lab A", "Assembly Hall"} <= {b["name"] for b in plan}
 
     # viewers cannot edit the map
     assert client.post("/map/buildings", headers=viewer, json={"name": "X"}).status_code == 403
@@ -598,6 +673,25 @@ def test_a_model_is_split_by_version_and_the_parts_sum_to_the_whole(client, admi
     ]
     assert sorted(g["total"] for g in groups) == [2, 3]
     assert sum(g["total"] for g in groups) == len(rows) == 5
+
+
+def test_the_dashboard_tile_cannot_drift_from_the_inventory_table(client, admin):
+    """The tile summed `Item.quantity` directly while the table skipped cards
+    with no card_type, so a legacy row made the two disagree — the dashboard
+    quietly contradicting the page it summarises. Both come from one
+    computation now, so no row can be counted by one and not the other."""
+    from lattice_core.database import SessionLocal
+    from lattice_core.models import Item, ItemType
+
+    with SessionLocal() as db:  # a row from before card_type was mandatory
+        db.add(Item(type=ItemType.card, name="Legacy Untyped Card", card_type=None, quantity=7))
+        db.commit()
+
+    s = client.get("/inventory/summary", headers=admin).json()
+    groups = client.get("/inventory/cards", headers=admin).json()
+    assert s["cards"] == sum(g["total"] for g in groups)
+    assert s["cards_desiccator"] == sum(g["desiccator"] for g in groups)
+    assert s["cards_in_use"] == sum(g["in_use"] for g in groups)
 
 
 def test_commercial_cards_are_no_longer_missing_from_inventory(client, admin):
@@ -757,6 +851,61 @@ def test_duplicate_location_names_are_refused(client, admin):
     assert "already exists" in dup.json()["detail"]
 
 
+# ─────────────────── §12 thresholds point at real cards ───────────────────
+def test_a_threshold_must_point_at_a_card_that_exists(client, admin, a_setup):
+    """The name used to be free text, so a typo produced a threshold watching a
+    model nobody stocks — permanently 'low', and unlinkable to anything."""
+    ghost = client.post(
+        "/inventory/thresholds", headers=admin, json={"item_id": 999999, "min_quantity": 1}
+    )
+    assert ghost.status_code == 400
+    assert "existing card" in ghost.json()["detail"]
+
+    # and it has to be a *card*, not any old item
+    not_a_card = client.post(
+        "/inventory/thresholds", headers=admin, json={"item_id": a_setup, "min_quantity": 1}
+    )
+    assert not_a_card.status_code == 400
+
+
+def test_a_threshold_takes_its_group_from_the_chosen_card(client, admin):
+    card = client.post(
+        "/items", headers=admin,
+        json={
+            "type": "card", "name": "Threshold Target NIC",
+            "card_type": "commercial", "quantity": 2, "version": "3.1",
+        },
+    ).json()
+
+    t = client.post(
+        "/inventory/thresholds", headers=admin,
+        json={"item_id": card["id"], "min_quantity": 5},
+    )
+    assert t.status_code == 201, t.text
+    created = t.json()
+    assert created["item_id"] == card["id"]
+    assert (created["card_type"], created["name"], created["version"]) == (
+        "commercial", "Threshold Target NIC", "3.1",
+    )
+    assert created["current_quantity"] == 2 and created["is_low"] is True
+
+    # a second threshold on the same group would just double every alert
+    dup = client.post(
+        "/inventory/thresholds", headers=admin,
+        json={"item_id": card["id"], "min_quantity": 3},
+    )
+    assert dup.status_code == 400
+    assert "already watches" in dup.json()["detail"]
+
+    # ...but the same model across *all* versions is a different watch
+    wide = client.post(
+        "/inventory/thresholds", headers=admin,
+        json={"item_id": card["id"], "min_quantity": 5, "any_version": True},
+    )
+    assert wide.status_code == 201, wide.text
+    assert wide.json()["version"] is None
+
+
 # ─────────────────── §8 sign-in shortcuts (login page) ───────────────────
 def _user_id(client, admin, email: str) -> int:
     return next(u["id"] for u in client.get("/users", headers=admin).json() if u["email"] == email)
@@ -768,7 +917,7 @@ def test_login_hints_expose_only_what_a_manager_published(client, admin):
     public = client.get("/auth/login-hints")  # deliberately no token
     assert public.status_code == 200
     hints = {h["email"]: h for h in public.json()}
-    assert "dana@lattice.io" in hints, "the demo seed publishes the demo accounts"
+    assert "dana@lattice.io" in hints, "the fixture publishes these accounts"
     assert hints["dana@lattice.io"]["password"] == "password"
     assert set(hints["dana@lattice.io"]) == {"full_name", "email", "role", "password"}
 
@@ -862,7 +1011,7 @@ def test_low_stock_alert_carries_the_component_list(client, admin, monkeypatch):
     with SessionLocal() as db:
         lows = asyncio.run(inv.check_and_alert_low_stock(db))
 
-    assert lows, "the demo seed deliberately keeps groups under their minimum"
+    assert lows, "the fixture deliberately keeps groups under their minimum"
     assert published
 
     for event in published:
@@ -871,34 +1020,15 @@ def test_low_stock_alert_carries_the_component_list(client, admin, monkeypatch):
         assert components
         for c in components:
             assert {
-                "name", "card_type", "tracking", "version",
+                "name", "card_type", "tracking", "version", "item_id", "link",
                 "current_quantity", "min_quantity", "shortfall",
             } <= set(c)
             assert c["current_quantity"] <= c["min_quantity"]
+            # every threshold is anchored to a real card, so the alert points at
+            # that card rather than leaving the reader to go hunting for a name
+            assert c["link"] == f"/items/{c['item_id']}"
             # the plain-text body lists them too, for the email
-            assert c["name"] in event.body
+            assert c["name"] in event.body and c["link"] in event.body
 
     # a manager watching several short groups gets them in ONE notification
     assert max(len(e.payload["components"]) for e in published) >= 2
-
-
-def test_default_floor_plan_backfills_into_an_already_seeded_db():
-    """The demo seed only runs on a virgin DB, so the floor-plan must be able to
-    land on a database that was created before the map existed."""
-    from lattice_core.database import SessionLocal
-    from lattice_core.models import MapBuilding
-    from lattice_core.seed import _ensure_map_buildings
-
-    with SessionLocal() as db:
-        db.query(MapBuilding).delete()  # simulate a pre-map database
-        db.commit()
-        assert db.query(MapBuilding).count() == 0
-
-        _ensure_map_buildings(db)
-        db.commit()
-        assert db.query(MapBuilding).count() == 6
-
-        # ...and it must not duplicate them on the next boot
-        _ensure_map_buildings(db)
-        db.commit()
-        assert db.query(MapBuilding).count() == 6

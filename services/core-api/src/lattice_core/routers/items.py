@@ -21,6 +21,7 @@ from lattice_core.schemas import (
     BulkAction,
     BulkRequest,
     BulkResult,
+    ChildrenRequest,
     DocumentCreate,
     DocumentOut,
     ExtraItemCreate,
@@ -219,6 +220,24 @@ async def link_item(
     parent = _get(db, body.parent_id)
     try:
         svc.link_item(db, child, parent, user)
+    except svc.DomainError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()
+    return get_item(item_id, db, user)
+
+
+@router.put("/{item_id}/children", response_model=ItemOut)
+async def set_children(
+    item_id: int,
+    body: ChildrenRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_manager),
+):
+    """Replace a container's contents (§6/§8) — the counterpart to `child_ids`
+    on create, so a setup or assembly stays editable after it exists."""
+    parent = _get(db, item_id)
+    try:
+        svc.set_children(db, parent, body.child_ids, user)
     except svc.DomainError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()

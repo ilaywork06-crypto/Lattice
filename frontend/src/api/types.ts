@@ -348,6 +348,8 @@ export interface InventoryGroup {
 
 export interface ThresholdOut {
   id: number
+  /** The card this threshold was created from — what its alerts link to. */
+  item_id: number | null
   card_type: CardType
   tracking: CardTracking | null
   name: string
@@ -358,11 +360,15 @@ export interface ThresholdOut {
   is_low: boolean
 }
 
+/** Created from an existing card: the server derives the watched group
+ *  (card type, name, version) from `item_id`, so a threshold can never point at
+ *  a model nobody stocks. */
 export interface ThresholdCreate {
-  card_type: CardType
-  name: string
-  version?: string | null
+  item_id: number
   min_quantity: number
+  editor_email?: string | null
+  /** Watch every version of that card's model, not just its own. */
+  any_version?: boolean
 }
 
 // ---- Graph ----------------------------------------------------------------
@@ -419,6 +425,10 @@ export interface NotificationItem {
 
 export interface LowStockComponent {
   threshold_id: number
+  /** The card the threshold was created from (null if it was since deleted). */
+  item_id: number | null
+  /** Where to go to act on it — the card itself, or /inventory as a fallback. */
+  link: string
   name: string
   card_type: CardType
   tracking: CardTracking | null

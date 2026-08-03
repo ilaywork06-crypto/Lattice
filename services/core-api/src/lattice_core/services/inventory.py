@@ -124,6 +124,7 @@ def threshold_status(db: Session) -> list[ThresholdOut]:
         out.append(
             ThresholdOut(
                 id=t.id,
+                item_id=t.item_id,
                 card_type=t.card_type,
                 tracking=card_tracking(t.card_type),
                 name=t.name,
@@ -154,9 +155,16 @@ def _matching_managers(db: Session, t: StockThreshold) -> list[User]:
 
 # ─────────────────────────── low-stock alert ───────────────────────────
 def _component(low: ThresholdOut) -> dict:
-    """One structured line of the alert — everything the UI needs to render a row."""
+    """One structured line of the alert — everything the UI needs to render a row.
+
+    ``item_id``/``link`` point at the card the threshold was created from, so the
+    alert opens the actual card rather than leaving the reader to search for a
+    name. It falls back to the inventory page if that card was since deleted.
+    """
     return {
         "threshold_id": low.id,
+        "item_id": low.item_id,
+        "link": f"/items/{low.item_id}" if low.item_id else "/inventory",
         "name": low.name or "(any name)",
         "card_type": low.card_type.value,
         "tracking": low.tracking.value if low.tracking else None,
@@ -171,9 +179,11 @@ def _describe(component: dict) -> str:
     label = component["name"]
     if component["version"]:
         label += f" v{component['version']}"
+    else:
+        label += " (all versions)"
     return (
         f"• {label} ({component['card_type']}) — {component['current_quantity']} "
-        f"in stock, minimum {component['min_quantity']}"
+        f"in stock, minimum {component['min_quantity']} — {component['link']}"
     )
 
 
@@ -232,7 +242,9 @@ async def check_and_alert_low_stock(db: Session) -> list[ThresholdOut]:
                     else f"Low stock: {components[0]['name']}"
                 ),
                 body=_alert_body(components),
-                link="/inventory",
+                # A single short component deep-links to that very card; a digest
+                # of several lands on inventory, and each row carries its own link.
+                link=components[0]["link"] if len(components) == 1 else "/inventory",
                 recipients=[recipient],
                 payload={"components": components},
             )
@@ -250,23 +262,20 @@ def summary(db: Session) -> InventorySummary:
             or 0
         )
 
-    def card_units(*filters) -> int:
-        """Physical cards, not card *records* — so the tiles match /inventory."""
-        return (
-            db.query(func.coalesce(func.sum(Item.quantity), 0))
-            .filter(
-                Item.is_template.is_(False), Item.type == ItemType.card, *filters
-            )
-            .scalar()
-            or 0
-        )
+    # The card tiles are summed **from the groups themselves**, not from a
+    # parallel query. A second query is a second definition of "a card in
+    # stock", and the two drifted: `card_groups` skips rows with no card_type
+    # while a plain SUM counted them, so the dashboard could quietly disagree
+    # with the table it summarises — the exact confusion this page exists to
+    # end. One computation, one answer.
+    groups = card_groups(db)
 
     return InventorySummary(
         setups=count(Item.type == ItemType.setup),
         assemblies=count(Item.type == ItemType.assembly),
-        cards=card_units(),
-        cards_in_use=card_units(Item.storage_status == StorageStatus.in_use),
-        cards_desiccator=card_units(Item.storage_status == StorageStatus.desiccator),
+        cards=sum(g.total for g in groups),
+        cards_in_use=sum(g.in_use for g in groups),
+        cards_desiccator=sum(g.desiccator for g in groups),
         faulty_items=count(Item.state == ItemState.faulty),
         pending_change_requests=(
             db.query(func.count(ChangeRequest.id))

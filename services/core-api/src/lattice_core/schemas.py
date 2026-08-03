@@ -335,6 +335,12 @@ class LinkRequest(BaseModel):
     parent_id: int
 
 
+class ChildrenRequest(BaseModel):
+    """The container's contents *after* the edit — not a delta."""
+
+    child_ids: list[int] = Field(default_factory=list)
+
+
 class StateChangeRequest(BaseModel):
     state: ItemState
     note: str | None = None
@@ -390,16 +396,28 @@ class AuditOut(BaseModel):
 
 # ─────────────────────────── Inventory ───────────────────────────
 class ThresholdCreate(BaseModel):
+    """Created from a card that exists, not from a typed-in name.
+
+    The server derives the watched group (`card_type`, `name`, `version`) from
+    `item_id`, so a threshold can never point at a model nobody stocks.
+    """
+
+    item_id: int
+    min_quantity: int = Field(default=0, ge=0)
+    editor_email: EmailStr | None = None
+    # Watch every version of the chosen card's model instead of just its own.
+    any_version: bool = False
+
+
+class ThresholdOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    item_id: int | None = None
     card_type: CardType
     name: str | None = None
     version: str | None = None
     min_quantity: int = 0
     editor_email: EmailStr | None = None
-
-
-class ThresholdOut(ThresholdCreate):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
     tracking: CardTracking | None = None
     current_quantity: int = 0
     is_low: bool = False

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from lattice_core.database import get_db
 from lattice_core.deps import require_editor, require_manager, require_viewer
-from lattice_core.models import CardType, StockThreshold, User
+from lattice_core.models import CardType, Item, ItemType, StockThreshold, User
 from lattice_core.schemas import (
     InventoryGroup,
     InventorySummary,
@@ -63,7 +63,51 @@ async def create_threshold(
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
-    t = StockThreshold(**data.model_dump())
+    """Set a minimum on the model of an **existing** card.
+
+    The group is derived from that card rather than typed in, so a threshold can
+    never watch a name nobody stocks (and so its alerts can link to a real card).
+    """
+    item = db.get(Item, data.item_id)
+    if item is None or item.type != ItemType.card or item.is_template:
+        raise HTTPException(
+            status_code=400,
+            detail="Pick an existing card to set a stock threshold on.",
+        )
+    if item.card_type is None:
+        raise HTTPException(
+            status_code=400, detail=f"Card '{item.name}' has no card type."
+        )
+
+    version = None if data.any_version else item.version
+    clash = (
+        db.query(StockThreshold)
+        .filter(
+            StockThreshold.card_type == item.card_type,
+            StockThreshold.name == item.name,
+            StockThreshold.version.is_(None) if version is None
+            else StockThreshold.version == version,
+        )
+        .first()
+    )
+    if clash:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A threshold already watches '{item.name}'"
+                + (f" v{version}" if version else " (all versions)")
+                + " — edit or remove that one instead of adding a second."
+            ),
+        )
+
+    t = StockThreshold(
+        item_id=item.id,
+        card_type=item.card_type,
+        name=item.name,
+        version=version,
+        min_quantity=data.min_quantity,
+        editor_email=data.editor_email,
+    )
     db.add(t)
     db.commit()
     db.refresh(t)

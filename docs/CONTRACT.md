@@ -20,7 +20,8 @@ OAuth2 password flow, JWT bearer tokens. Both services validate the **same** JWT
   Returns only *active* accounts a manager marked `login_hint_visible`, and
   `password` only where a manager explicitly published one (`null` otherwise —
   the shortcut then fills the email alone). Nothing is exposed by default: new
-  accounts start hidden, and the demo seed is what publishes the demo logins.
+  accounts start hidden — a fresh system publishes none, so the login page shows
+  no shortcuts at all until a manager adds one.
 
 Send `Authorization: Bearer <token>` on every other request.
 
@@ -56,7 +57,9 @@ branch on role: managers act directly; editors open a change-request dialog.
 - `DELETE /items/{id}` (manager) → 204.
 - `POST /items/bulk` (manager) `{ action: move|state_change|delete|link|unlink, item_ids[req], location_id?, parent_id?, state?, note? }` → `{ processed, failed, errors[] }`. **Atomic**: the whole batch commits or rolls back together.
 - `POST /items/{id}/move` (manager) `{ location_id, note? }` → `ItemOut` (cascades to descendants).
+  **A linked item cannot be moved** (400): being linked means it physically sits inside its parent, so it has no location of its own. Move the parent — the contents follow — or unlink it first. The same rule applies to `location_id` on `PATCH /items/{id}` and to a bulk move (which rolls the whole batch back).
 - `POST /items/{id}/link` (manager) `{ parent_id }` → `ItemOut` (cascades the parent's location through the whole adopted subtree).
+- `PUT /items/{id}/children` (manager) `{ child_ids[] }` → `ItemOut`. Replaces the container's contents — the list is the **end state**, not a delta. Removed members are unlinked (never deleted), added ones are linked (inheriting the location). Validated as a whole: one illegal member rejects the edit and leaves the contents untouched.
 - `POST /items/{id}/unlink` (manager) → `ItemOut`.
 - `POST /items/{id}/state` (manager) `{ state, note? }` → `ItemOut`. Note is **required** when moving into/out of `faulty` (else 400).
 - `POST /items/{id}/documents` (manager) `{ name, url?, doc_type? }` → `DocumentOut`.
@@ -99,7 +102,8 @@ All stock figures are **sums of `Item.quantity`**, never row counts: a serial-tr
   **One card name is several groups**: the key is `(card_type, name, version, production_date)`, so 8 boards under one name across two versions come back as `total: 6` + `total: 2` and *no* group says 8. The parts always sum to the whole; the UI adds the per-model subtotal on top.
 - `GET /inventory/thresholds` → `ThresholdOut[]` (`{ id, card_type, tracking, name, version, min_quantity, editor_email, current_quantity, is_low }`).
 - `GET /inventory/low-stock` → `ThresholdOut[]`.
-- `POST /inventory/thresholds` (editor+) `ThresholdCreate` → `ThresholdOut`.
+- `POST /inventory/thresholds` (editor+) `ThresholdCreate = { item_id(req), min_quantity, editor_email?, any_version? }` → `ThresholdOut`.
+  A threshold is set on **an existing card**: the server derives the watched group (`card_type`, `name`, `version`) from `item_id`, 400s if that id isn't a live card, and 400s on a second threshold for the same group. `any_version: true` widens the watch from that card's version to the whole model. Alerts then carry `item_id`/`link` and point at a real card.
 - `DELETE /inventory/thresholds/{id}` (manager) → 204.
 
 ### Catalog — admin vocabularies (§2)
@@ -146,7 +150,7 @@ All stock figures are **sums of `Item.quantity`**, never row counts: a serial-tr
 Validates the same Bearer JWT; derives the current user from `sub`.
 - `GET /notifications?unread_only=&limit=` → `Notification[]` (newest first) for the current user.
   `Notification = { id, type, title, body, payload, link, read, created_at }`.
-  `payload` is the source event's structured context (`null` for older rows). A `inventory.low_stock` alert carries `{ components: [{ threshold_id, name, card_type, tracking, version, current_quantity, min_quantity, shortfall }] }`, which the UI renders as a list — `body` holds the same list as plain text for email.
+  `payload` is the source event's structured context (`null` for older rows). A `inventory.low_stock` alert carries `{ components: [{ threshold_id, item_id, link, name, card_type, tracking, version, current_quantity, min_quantity, shortfall }] }`, which the UI renders as a clickable list — `body` holds the same list as plain text for email.
 - `GET /notifications/unread-count` → `{ count }`.
 - `POST /notifications/{id}/read` → 204.
 - `POST /notifications/read-all` → 204.
@@ -175,8 +179,10 @@ The `lattice_shared` package (already built) provides `EventBus` and `Event`:
 `from lattice_shared.events import EventBus, Event, EventType, Recipient`.
 `EventBus(redis_url).subscribe()` is an async generator yielding `Event`s.
 
-## Demo logins (seeded)
-- `admin@lattice.io` / `admin1234` — manager (bootstrap)
-- `noa@lattice.io` / `password` — manager (linked to the demo setup)
-- `dana@lattice.io` / `password` — editor
-- `amir@lattice.io` / `password` — viewer
+## First sign-in
+
+The system ships **empty** — no projects, locations, items or floor plan. The
+only account created on first boot is the bootstrap administrator
+(`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`, default
+`admin@lattice.io` / `admin1234`). Everything else is created through the UI or
+the API. See [`USER_GUIDE.md`](USER_GUIDE.md) for the order to do it in.

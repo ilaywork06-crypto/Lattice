@@ -30,7 +30,9 @@ import {
 import type {
   AuditOut,
   ItemCreate,
+  ItemListOut,
   ItemOut,
+  ItemType,
   ItemUpdate,
   UserBrief,
 } from '@/api/types'
@@ -106,6 +108,76 @@ watch(itemId, () => {
   tab.value = 'overview'
   void loadItem()
 })
+
+// ---------------------------------------------------------------------------
+// Contents (what sits inside this container)
+// ---------------------------------------------------------------------------
+// Contents could only be chosen while *creating* a setup or assembly, so a
+// container put together wrongly could never be corrected. This edits it in
+// place: the dialog submits the full membership and the server links/unlinks
+// the difference, cascading locations exactly as a normal link would.
+const CONTENT_TYPES: Record<ItemType, ItemType[]> = {
+  setup: ['assembly', 'card'],
+  assembly: ['card'],
+  card: [],
+}
+
+const contentsOpen = ref(false)
+const contentsSaving = ref(false)
+const contentsIds = ref<number[]>([])
+const contentsOptions = ref<ItemListOut[]>([])
+const contentsLoading = ref(false)
+
+const contentsSelectItems = computed(() =>
+  contentsOptions.value.map((c) => ({
+    value: c.id,
+    title: c.name,
+    subtitle:
+      c.parent_id && c.parent_id !== item.value?.id
+        ? `${TYPE_LABELS[c.type]} · ${t('itemForm.willMove')}`
+        : TYPE_LABELS[c.type],
+  })),
+)
+
+async function openContents() {
+  if (!item.value) return
+  actionError.value = ''
+  contentsIds.value = item.value.children.map((c) => c.id)
+  contentsOpen.value = true
+  contentsLoading.value = true
+  try {
+    const lists = await Promise.all(
+      CONTENT_TYPES[item.value.type].map((ty) => itemsApi.list({ type: ty, limit: 500 })),
+    )
+    contentsOptions.value = lists
+      .flat()
+      .filter((c) => c.id !== item.value?.id)
+      // free items first, then ones that would be re-homed from another container
+      .sort(
+        (a, b) =>
+          Number(!!a.parent_id) - Number(!!b.parent_id) || a.name.localeCompare(b.name),
+      )
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    contentsLoading.value = false
+  }
+}
+
+async function saveContents() {
+  if (!item.value) return
+  contentsSaving.value = true
+  try {
+    await itemsApi.setChildren(item.value.id, contentsIds.value)
+    ui.success(t('detail.contentsUpdated'))
+    contentsOpen.value = false
+    await loadItem()
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    contentsSaving.value = false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Overview fields
@@ -636,9 +708,13 @@ onMounted(loadItem)
                   <v-btn v-bind="props" variant="tonal" icon="mdi-dots-vertical" />
                 </template>
                 <v-list density="compact" nav>
+                  <!-- A linked item is physically inside its parent, so it has
+                       no location of its own to change (§3). -->
                   <v-list-item
                     prepend-icon="mdi-map-marker-radius"
                     :title="$t('items.actions.move')"
+                    :disabled="!!item.parent"
+                    :subtitle="item.parent ? $t('detail.moveLockedShort') : undefined"
                     @click="(actionError = ''), (moveOpen = true)"
                   />
                   <v-list-item
@@ -713,6 +789,24 @@ onMounted(loadItem)
 
           <!-- Hierarchy (bidirectional) -->
           <v-window-item value="hierarchy" class="pa-5">
+            <v-alert
+              v-if="item.parent"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mb-4"
+              icon="mdi-map-marker-off-outline"
+            >
+              <i18n-t keypath="detail.moveLocked" scope="global">
+                <template #name><strong>{{ item.name }}</strong></template>
+                <template #parent>
+                  <RouterLink :to="`/items/${item.parent.id}`" class="text-primary">
+                    {{ item.parent.name }}
+                  </RouterLink>
+                </template>
+              </i18n-t>
+            </v-alert>
+
             <div class="mb-5">
               <div class="text-overline text-medium-emphasis mb-2">{{ $t('detail.parent') }}</div>
               <v-card
@@ -739,8 +833,20 @@ onMounted(loadItem)
             </div>
 
             <div>
-              <div class="text-overline text-medium-emphasis mb-2">
-                {{ $t('detail.children', { n: item.children.length }) }}
+              <div class="d-flex align-center gap-2 mb-2">
+                <div class="text-overline text-medium-emphasis">
+                  {{ $t('detail.children', { n: item.children.length }) }}
+                </div>
+                <v-spacer />
+                <v-btn
+                  v-if="auth.canDirectEdit && item.type !== 'card'"
+                  size="small"
+                  variant="tonal"
+                  prepend-icon="mdi-playlist-edit"
+                  @click="openContents"
+                >
+                  {{ $t('detail.editContents') }}
+                </v-btn>
               </div>
               <v-row v-if="item.children.length" dense>
                 <v-col v-for="child in item.children" :key="child.id" cols="12" sm="6" md="4">
@@ -973,6 +1079,47 @@ onMounted(loadItem)
         :direct="auth.canDirectEdit"
         @submit="onCreateSubmit"
       />
+      <v-dialog v-model="contentsOpen" max-width="640">
+        <v-card rounded="lg">
+          <v-card-title class="pa-4">
+            {{ $t('detail.editContentsOf', { name: item.name }) }}
+          </v-card-title>
+          <v-divider />
+          <v-card-text class="pa-4">
+            <v-autocomplete
+              v-model="contentsIds"
+              :label="item.type === 'setup' ? $t('itemForm.includeChildrenSetup') : $t('itemForm.includeChildrenAssembly')"
+              :items="contentsSelectItems"
+              :loading="contentsLoading"
+              item-title="title"
+              item-value="value"
+              multiple
+              chips
+              closable-chips
+              :hint="$t('detail.editContentsHint')"
+              persistent-hint
+            >
+              <template #item="{ props: itemProps, item: option }">
+                <v-list-item v-bind="itemProps" :subtitle="option.raw.subtitle" />
+              </template>
+            </v-autocomplete>
+          </v-card-text>
+          <v-divider />
+          <v-card-actions class="pa-3">
+            <v-spacer />
+            <v-btn variant="text" @click="contentsOpen = false">{{ $t('common.cancel') }}</v-btn>
+            <v-btn
+              color="primary"
+              variant="flat"
+              :loading="contentsSaving"
+              @click="saveContents"
+            >
+              {{ $t('common.save') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
       <MoveDialog
         v-model="moveOpen"
         :direct="auth.canDirectEdit"

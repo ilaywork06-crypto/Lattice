@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 720
 
-    # Bootstrap admin + demo data
+    # Bootstrap admin — the only account created automatically, so that a fresh
+    # (deliberately empty) system can be signed into at all.
     bootstrap_admin_email: str = "admin@lattice.io"
     bootstrap_admin_password: str = "admin1234"
-    seed_demo_data: bool = True
 
     # CORS (frontend origins)
     cors_origins: list[str] = [

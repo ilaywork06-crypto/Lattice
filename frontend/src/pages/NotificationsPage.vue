@@ -61,6 +61,18 @@ async function open(n: NotificationItem) {
   }
 }
 
+/** Open the card the threshold was created from (or inventory as a fallback). */
+async function openComponent(n: NotificationItem, c: LowStockComponent) {
+  if (!n.read) {
+    try {
+      await store.markRead(n.id)
+    } catch (e) {
+      ui.error(e)
+    }
+  }
+  router.push(c.link || '/inventory')
+}
+
 async function markAll() {
   try {
     await store.markAllRead()
@@ -128,8 +140,12 @@ onMounted(refresh)
                   v-for="c in components(n)"
                   :key="c.threshold_id ?? c.name"
                   class="low-stock-row"
+                  :class="{ 'low-stock-row--link': !!c.item_id }"
+                  @click.stop="openComponent(n, c)"
                 >
                   <v-icon icon="mdi-memory" size="16" class="me-2 text-medium-emphasis" />
+                  <!-- The threshold was set on a real card, so the row opens it
+                       instead of leaving the reader to search for the name. -->
                   <span class="font-weight-medium">{{ c.name }}</span>
                   <span v-if="c.version" class="text-medium-emphasis ms-1">v{{ c.version }}</span>
                   <v-chip size="x-small" variant="tonal" class="ms-2">
@@ -180,6 +196,15 @@ onMounted(refresh)
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.low-stock-row--link {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.low-stock-row--link:hover {
+  background: rgba(var(--v-theme-on-surface), 0.06);
 }
 
 .low-stock-row {

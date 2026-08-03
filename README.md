@@ -70,26 +70,26 @@ Then open:
 | http://localhost:8001/docs | notification-service OpenAPI |
 | http://localhost:8025 | MailHog — see the emails the system sends |
 
-The core-api creates its schema and seeds an admin + demo data on first boot.
+### First sign-in
 
-### Demo logins
+The system starts **empty** — no projects, locations, items or floor plan. On
+first boot the core-api creates its schema and exactly one account, the
+bootstrap administrator:
 
-The sign-in screen offers these as one-click shortcuts. That list is **data, not
-code**: a manager toggles each account (and whether its password is pre-filled)
-under *Users & Permissions*, and with none published the section disappears
-entirely. Anything published is served unauthenticated — that is the point of
-the screen, and the reason nothing is published by default outside the demo seed.
+| Email | Password | Role |
+|-------|----------|------|
+| `admin@lattice.io` | `admin1234` | manager |
 
-| Email | Password | Role | Notes |
-|-------|----------|------|-------|
-| `admin@lattice.io` | `admin1234` | manager | bootstrap admin |
-| `noa@lattice.io` | `password` | manager | linked to the demo setup (gets its approvals) |
-| `dana@lattice.io` | `password` | editor | proposes changes for approval |
-| `amir@lattice.io` | `password` | viewer | read-only |
+Both are configurable (`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`) and
+the password should be changed at once. Everything after that is created in the
+app — **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) walks through it in order**,
+from the first project value to the first low-stock alert.
 
-Try this end-to-end: log in as **Dana** (editor), propose a change to the Falcon
-setup → log in as **Noa** (manager), see the notification + the MailHog email,
-approve it → watch the change apply and the audit log update.
+The sign-in screen can offer accounts as one-click shortcuts. That list is
+**data, not code**: a manager publishes each account (and optionally its
+password) under *Users & Permissions*. A fresh system publishes none, so the
+section is simply absent until someone opts in — anything published is served
+unauthenticated, which is what that screen is for.
 
 ---
 
@@ -113,7 +113,7 @@ npm run dev        # http://localhost:5173
 
 ### Tests
 ```bash
-uv run pytest services/core-api/tests -q            # core API (52 tests)
+uv run pytest services/core-api/tests -q            # core API (65 tests)
 uv run pytest services/notification-service/tests -q # notifications (9 tests)
 uv run ruff check services packages                  # lint
 ```
@@ -125,10 +125,10 @@ uv run ruff check services packages                  # lint
 | # | Requirement | Where |
 |---|-------------|-------|
 | §2 | Item types: setups / assemblies / cards; commercial / company / unique cards; "linking" vs "linked" | `models.py` (`Item`, `ItemType`, `CardType`, `CardTracking`), self-referential `parent_id`; unique names + per-card-type rules in `services/items.py` |
-| §3 | Link card→assembly/setup, assembly→setup; **moving a container cascades location to its contents**, moving a contained item does not | `services/items.py: move_item` (downward cascade), `link_item`/`validate_link` (allowed pairs) |
+| §3 | Link card→assembly/setup, assembly→setup; **moving a container cascades location to its contents**, and a linked item cannot be moved on its own | `services/items.py: move_item` (downward cascade + linked-item guard), `link_item`/`validate_link` (allowed pairs) |
 | §4 | Bidirectional navigation between linked items | `ItemOut.parent` + `ItemOut.children` (clickable both ways in the UI) |
 | §5 | Setups: name, industry, project, location, team, **state + history**, description, DAMATZ (דמ"צ), linked items, extra non-card items (part no. / serial / signed-by) | `Item`, `ExtraItem`, `StateHistory` |
-| §6 | Assemblies: same documentation + shows parent setup | `Item` (+ `parent` link) |
+| §6 | Assemblies: same documentation + shows parent setup; **contents editable after creation** | `Item` (+ `parent` link), `services/items.py: set_children`, `PUT /items/{id}/children` |
 | §7 | Cards: responsible, lead, production date, version, location, state+history, linked setups/assemblies, documents; count **in-use vs desiccator** | `Item` card fields, `Document`, `StorageStatus`, `/inventory/summary` (all figures are unit sums) |
 | §8 | Permissions: viewer / editor / manager; managers also choose **which accounts (and whether their passwords) appear as shortcuts on the sign-in screen** | `models.UserRole`, `deps.py` role guards, `/users`, `User.login_hint_*`, `GET /auth/login-hints` |
 | §9 | Change-approval workflow: editor proposes (with description + reason) → managers notified (email + in-app) → approve → apply. Items can be **linked to specific managers** for targeted routing | `models.ChangeRequest`, `services/change_requests.py`, `item_managers` table |
@@ -148,7 +148,9 @@ lattice/
 ├── docker-compose.yml          # full dev stack
 ├── pyproject.toml              # uv workspace root
 ├── .env.example
-├── docs/CONTRACT.md            # shared API + event contract
+├── docs/
+│   ├── CONTRACT.md             # shared API + event contract
+│   └── USER_GUIDE.md           # how to actually use the system (Hebrew)
 ├── packages/
 │   └── lattice-shared/           # shared config + typed Redis event bus
 ├── services/
@@ -170,7 +172,12 @@ lattice/
   That makes "which card is in which setup" a graph walk, and makes the
   cascade-on-move rule a single downward traversal.
 - **Location cascade is strictly downward.** Moving an item updates it and all
-  descendants; it never touches ancestors — exactly matching §3.
+  descendants; it never touches ancestors — exactly matching §3. The corollary
+  is enforced too: a *linked* item has no location of its own (it is inside its
+  parent), so moving it is refused with an error naming the parent to move.
+- **Ships empty.** `seed.py` creates the bootstrap admin and nothing else; the
+  world the tests read is built by their own fixtures. Nothing in shipped code
+  invents rows a customer would have to delete.
 - **Two kinds of card, counted two ways.** A *commercial* card is a quantity of
   interchangeable parts on a single row (`Item.quantity`, no serial); a
   *company*/*unique* card is one row per physical board with a mandatory,

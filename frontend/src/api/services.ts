@@ -96,6 +96,11 @@ export const itemsApi = {
     const { data } = await coreApi.post<ItemOut>(`/items/${id}/unlink`, {})
     return data
   },
+  /** Replace a container's contents. `child_ids` is the result, not a delta. */
+  async setChildren(id: number, child_ids: number[]): Promise<ItemOut> {
+    const { data } = await coreApi.put<ItemOut>(`/items/${id}/children`, { child_ids })
+    return data
+  },
   async changeState(id: number, state: ItemState, note?: string): Promise<ItemOut> {
     const { data } = await coreApi.post<ItemOut>(`/items/${id}/state`, { state, note })
     return data

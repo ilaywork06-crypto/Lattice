@@ -1,14 +1,26 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { inventoryApi } from '@/api/services'
+import { inventoryApi, itemsApi } from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ConfirmDialog from '@/components/dialogs/ConfirmDialog.vue'
-import { CARD_TYPES, CARD_TYPE_LABELS, formatDate, TRACKING_LABELS } from '@/constants'
-import type { CardTracking, CardType, InventoryGroup, ThresholdOut } from '@/api/types'
+import {
+  CARD_TRACKING,
+  CARD_TYPES,
+  CARD_TYPE_LABELS,
+  formatDate,
+  TRACKING_LABELS,
+} from '@/constants'
+import type {
+  CardTracking,
+  CardType,
+  InventoryGroup,
+  ItemListOut,
+  ThresholdOut,
+} from '@/api/types'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -112,37 +124,69 @@ async function loadThresholds() {
 watch([view, cardTypeFilter], loadGroups)
 
 // ---- Threshold management -------------------------------------------------
+// A threshold is set on a card that exists, never on a typed-in name: the user
+// picks from the cards in the system and the server derives the watched group
+// from it. That is also what lets the alert link back to a real card.
 const thresholdDialog = ref(false)
 const thresholdForm = reactive<{
-  card_type: CardType
-  name: string
-  version: string
+  item_id: number | null
+  any_version: boolean
   min_quantity: number
-}>({ card_type: 'company', name: '', version: '', min_quantity: 1 })
+}>({ item_id: null, any_version: false, min_quantity: 1 })
 const thresholdSaving = ref(false)
 const removeThresholdId = ref<number | null>(null)
 
-function openThresholdDialog() {
-  thresholdForm.card_type = 'company'
-  thresholdForm.name = ''
-  thresholdForm.version = ''
+const cards = ref<ItemListOut[]>([])
+const cardsLoading = ref(false)
+
+/** One entry per card *model*, not per board — twenty serialised copies of a
+ *  model are one thing to set a minimum on. */
+const cardOptions = computed(() => {
+  const seen = new Map<string, { title: string; subtitle: string; value: number }>()
+  for (const c of cards.value) {
+    if (!c.card_type) continue
+    const key = `${c.card_type}|${c.name}|${c.version ?? ''}`
+    if (seen.has(key)) continue
+    seen.set(key, {
+      value: c.id,
+      title: c.version ? `${c.name} · v${c.version}` : c.name,
+      subtitle: `${CARD_TYPE_LABELS[c.card_type]} · ${TRACKING_LABELS[CARD_TRACKING[c.card_type]]}`,
+    })
+  }
+  return [...seen.values()].sort((a, b) => a.title.localeCompare(b.title))
+})
+
+const selectedCard = computed(() =>
+  cards.value.find((c) => c.id === thresholdForm.item_id) ?? null,
+)
+
+async function openThresholdDialog() {
+  thresholdForm.item_id = null
+  thresholdForm.any_version = false
   thresholdForm.min_quantity = 1
   thresholdDialog.value = true
+  cardsLoading.value = true
+  try {
+    cards.value = await itemsApi.list({ type: 'card', limit: 1000 })
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    cardsLoading.value = false
+  }
 }
 
 async function saveThreshold() {
-  if (!thresholdForm.name.trim()) return
+  if (thresholdForm.item_id == null) return
   thresholdSaving.value = true
   try {
     await inventoryApi.createThreshold({
-      card_type: thresholdForm.card_type,
-      name: thresholdForm.name.trim(),
-      version: thresholdForm.version.trim() || undefined,
+      item_id: thresholdForm.item_id,
+      any_version: thresholdForm.any_version,
       min_quantity: Number(thresholdForm.min_quantity),
     })
     ui.success(t('inventory.saved'))
     thresholdDialog.value = false
-    await loadThresholds()
+    await Promise.all([loadThresholds(), loadGroups()])
   } catch (e) {
     ui.error(e)
   } finally {
@@ -385,8 +429,19 @@ onMounted(() => {
                 {{ TRACKING_LABELS[t.tracking] }}
               </span>
             </td>
-            <td class="font-weight-medium">{{ t.name }}</td>
-            <td>{{ t.version || '—' }}</td>
+            <td class="font-weight-medium">
+              <!-- The threshold was set from a real card, so it can open it. -->
+              <RouterLink v-if="t.item_id" :to="`/items/${t.item_id}`" class="text-primary">
+                {{ t.name }}
+              </RouterLink>
+              <span v-else>{{ t.name }}</span>
+            </td>
+            <td>
+              <span v-if="t.version">{{ t.version }}</span>
+              <span v-else class="text-caption text-medium-emphasis">
+                {{ $t('inventory.allVersions') }}
+              </span>
+            </td>
             <td class="text-center">
               <span :class="t.is_low ? 'text-error font-weight-bold' : 'font-weight-medium'">
                 {{ t.current_quantity }}
@@ -424,14 +479,37 @@ onMounted(() => {
         <v-card-title class="pa-4">{{ $t('inventory.addTitle') }}</v-card-title>
         <v-divider />
         <v-card-text class="pa-4">
-          <v-select
-            v-model="thresholdForm.card_type"
-            :label="$t('fields.cardType')"
+          <!-- Typing filters the existing cards; there is no way to invent one,
+               which is what keeps a threshold pointing at something real. -->
+          <v-autocomplete
+            v-model="thresholdForm.item_id"
+            :label="$t('inventory.pickCard')"
+            :items="cardOptions"
+            :loading="cardsLoading"
+            :no-data-text="cardsLoading ? $t('common.loading') : $t('inventory.noCardsToWatch')"
+            item-title="title"
+            item-value="value"
+            autofocus
             class="mb-1"
-            :items="CARD_TYPES.map((c) => ({ title: CARD_TYPE_LABELS[c], value: c }))"
+            prepend-inner-icon="mdi-memory"
+            :hint="$t('inventory.pickCardHint')"
+            persistent-hint
+          >
+            <template #item="{ props: itemProps, item }">
+              <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
+            </template>
+          </v-autocomplete>
+
+          <v-checkbox
+            v-if="selectedCard?.version"
+            v-model="thresholdForm.any_version"
+            :label="$t('inventory.anyVersion', { version: selectedCard.version })"
+            color="primary"
+            density="compact"
+            hide-details
+            class="mb-2"
           />
-          <v-text-field v-model="thresholdForm.name" :label="$t('inventory.cardNameReq')" class="mb-1" />
-          <v-text-field v-model="thresholdForm.version" :label="$t('inventory.versionOpt')" class="mb-1" />
+
           <v-text-field
             v-model.number="thresholdForm.min_quantity"
             :label="$t('inventory.minQty')"
@@ -447,7 +525,7 @@ onMounted(() => {
             color="primary"
             variant="flat"
             :loading="thresholdSaving"
-            :disabled="!thresholdForm.name.trim()"
+            :disabled="thresholdForm.item_id == null"
             @click="saveThreshold"
           >
             {{ $t('common.save') }}
