@@ -347,7 +347,7 @@ export default {
   emptyDefault: 'אין כאן עדיין כלום',
   map: {
     placingHint: 'לחצו על התוכנית כדי לקבוע קואורדינטות',
-    editHint: 'גררו לציור · גררו בניין להזזה · פינות לשינוי גודל · Shift+גרירה לתזוזה',
+    editHint: 'גררו על שטח ריק כדי לצייר · גררו מבנה כדי להזיז · פינות לשינוי גודל',
     rooms: {
       labA: 'מעבדה A',
       assemblyHall: 'אולם הרכבה',
@@ -356,11 +356,6 @@ export default {
       labB: 'מעבדה B',
       offices: 'משרדים',
     },
-    zoomIn: 'הגדלה',
-    zoomOut: 'הקטנה',
-    resetView: 'הצגת כל המפה',
-    textSmaller: 'טקסט קטן יותר',
-    textBigger: 'טקסט גדול יותר',
   },
 
   subtitles: {
@@ -542,7 +537,7 @@ export default {
   },
 
   loc: {
-    subtitle: 'מפת קומה בגודל 100 × 100 לפי קואורדינטות המיקומים — זום, תזוזה וגודל טקסט.',
+    subtitle: 'תוכנית קומה מסוגננת המשורטטת לפי הקואורדינטות של כל מיקום.',
     addLocation: 'הוספת מיקום',
     floorPlan: 'תוכנית קומת המבנה',
     legendEmpty: 'ריק',

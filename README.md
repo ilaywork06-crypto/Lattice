@@ -48,7 +48,7 @@ bus) lives in the `lattice-shared` workspace package.
 
 ### Tech
 - **Backend:** Python 3.12+, FastAPI, SQLAlchemy 2.0, Pydantic v2, managed as a **uv workspace (monorepo)**.
-- **Frontend:** Vue 3 (`<script setup>`, TypeScript), Vuetify 3 (light/dark + 8 pastel themes), Pinia, Vue Router, vis-network (graphs), custom SVG floor-plan (map with zoom/pan).
+- **Frontend:** Vue 3 (`<script setup>`, TypeScript), Vuetify 3 (light/dark + 8 pastel themes), Pinia, Vue Router, vis-network (graphs), custom SVG floor-plan.
 - **Database:** schema owned by **Alembic** migrations (applied on start-up); a pre-migration database is converted once (see `legacy_upgrade.py`).
 - **Infra:** PostgreSQL ×2, Redis (pub/sub), MailHog (email capture), Docker Compose.
 - **Config:** `.env` / dotenv everywhere (`.env.example` provided).
@@ -160,7 +160,7 @@ uv run alembic -c services/core-api/alembic.ini upgrade head   # the API also do
 | Real document uploads | `models.Document` (`storage_key`), `services/files.py`, `/uploads`, `/documents/{id}/download` |
 | Desiccator = a set of locations (Catalog → Desiccator); stock thresholds on built/ok cards in it | `Location.is_desiccator`, `PUT /locations/desiccator`, `services/inventory.py` |
 | Hierarchy graph by templates, all trees of a template, one item's tree | `routers/graph.py`, `HierarchyGraph.vue`, `GraphPage.vue`, item page → Hierarchy |
-| Map 100 × 100 with zoom, pan and label size | `FloorPlanMap.vue` |
+| Map 100 × 100 floor-plan | `FloorPlanMap.vue` |
 | Audit: my items only, 6 months / year / all time, Excel export | `routers/audit.py` |
 | Notifications: all / unread / read | notification-service `GET /notifications?status=` |
 | Excel import per template (headers = creation fields), all-or-nothing with per-cell errors; export | `services/importexport.py` |

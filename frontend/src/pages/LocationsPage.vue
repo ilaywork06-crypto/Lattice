@@ -342,8 +342,8 @@ onMounted(() => {
     </PageHeader>
 
     <v-row>
-      <!-- Map: the full 100 × 100 plan, as large as the screen allows -->
-      <v-col cols="12" lg="8">
+      <!-- Map -->
+      <v-col cols="12" md="8">
         <v-card variant="flat" border>
           <v-card-title class="d-flex align-center gap-2">
             <v-icon icon="mdi-floor-plan" color="primary" />
@@ -389,7 +389,7 @@ onMounted(() => {
       </v-col>
 
       <!-- Map editor (edit mode) -->
-      <v-col v-if="mapEdit" cols="12" lg="4">
+      <v-col v-if="mapEdit" cols="12" md="4">
         <v-card variant="flat" border height="100%">
           <v-card-title class="d-flex align-center gap-2">
             <v-icon icon="mdi-pencil-ruler" color="secondary" />
@@ -490,7 +490,7 @@ onMounted(() => {
       </v-col>
 
       <!-- Selected location items -->
-      <v-col v-else cols="12" lg="4">
+      <v-col v-else cols="12" md="4">
         <v-card variant="flat" border height="100%">
           <template v-if="selected">
             <v-card-title class="d-flex align-center gap-2">

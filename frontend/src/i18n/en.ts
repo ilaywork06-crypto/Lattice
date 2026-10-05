@@ -348,7 +348,7 @@ export default {
   emptyDefault: 'Nothing here yet',
   map: {
     placingHint: 'Click on the plan to set coordinates',
-    editHint: 'Drag to draw · drag a building to move · corners to resize · Shift-drag to pan',
+    editHint: 'Drag on empty space to draw · drag a building to move · corners to resize',
     rooms: {
       labA: 'Lab A',
       assemblyHall: 'Assembly Hall',
@@ -357,11 +357,6 @@ export default {
       labB: 'Lab B',
       offices: 'Offices',
     },
-    zoomIn: 'Zoom in',
-    zoomOut: 'Zoom out',
-    resetView: 'Fit the whole plan',
-    textSmaller: 'Smaller text',
-    textBigger: 'Bigger text',
   },
 
   subtitles: {
@@ -543,7 +538,7 @@ export default {
   },
 
   loc: {
-    subtitle: 'A 100 × 100 floor-plan plotted from each location\'s coordinates — zoom, pan and resize the labels.',
+    subtitle: "A stylized floor-plan plotted from each location's coordinates.",
     addLocation: 'Add location',
     floorPlan: 'Building floor-plan',
     legendEmpty: 'empty',

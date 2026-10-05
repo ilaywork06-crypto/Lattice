@@ -19,7 +19,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata_core:/var/lib/postgresql/data
+      - pgdata_core1:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${CORE_POSTGRES_USER:-lattice} -d ${CORE_POSTGRES_DB:-lattice_core}"]
       interval: 5s
@@ -121,6 +121,6 @@ services:
       - notification-service
 
 volumes:
-  pgdata_core:
+  pgdata_core1:
   pgdata_notify:
   uploads_core:
