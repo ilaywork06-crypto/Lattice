@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import ItemsListView from '@/components/ItemsListView.vue'
+import TemplateGroupsView from '@/components/TemplateGroupsView.vue'
 </script>
 
 <template>
-  <ItemsListView type="card" icon="mdi-memory" :subtitle="$t('subtitles.cards')" />
+  <TemplateGroupsView type="card" icon="mdi-memory" :subtitle="$t('subtitles.cards')" />
 </template>

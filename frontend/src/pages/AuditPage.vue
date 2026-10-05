@@ -3,24 +3,27 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { auditApi } from '@/api/services'
-import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { formatDateTime } from '@/constants'
-import type { AuditOut } from '@/api/types'
+import type { AuditOut, AuditPeriod } from '@/api/types'
+import { downloadBlob } from '@/utils/download'
 
-const auth = useAuthStore()
 const ui = useUiStore()
 const router = useRouter()
 const { t } = useI18n({ useScope: 'global' })
 
 const view = ref<'all' | 'mine'>('all')
-const period = ref<'day' | 'week' | 'month'>('week')
-const limit = ref(50)
+const period = ref<AuditPeriod>('month')
+const limit = ref(500)
 const entries = ref<AuditOut[]>([])
 const loading = ref(false)
+const exporting = ref(false)
 const search = ref('')
+
+const PERIODS: AuditPeriod[] = ['day', 'week', 'month', 'half_year', 'year', 'all']
+const periodItems = computed(() => PERIODS.map((p) => ({ title: t(`audit.periods.${p}`), value: p })))
 
 const headers = computed(() => [
   { title: t('audit.when'), key: 'created_at', width: 190 },
@@ -41,18 +44,37 @@ function actionColor(action: string): string {
   return 'blue-grey'
 }
 
+function query() {
+  return { period: period.value, mine: view.value === 'mine', limit: limit.value }
+}
+
 async function load() {
   loading.value = true
   try {
-    entries.value =
-      view.value === 'mine'
-        ? await auditApi.myItems(period.value)
-        : await auditApi.list({ limit: limit.value })
+    entries.value = await auditApi.list(query())
   } catch (e) {
     ui.error(e)
   } finally {
     loading.value = false
   }
+}
+
+async function exportExcel() {
+  exporting.value = true
+  try {
+    const blob = await auditApi.export({ ...query(), limit: undefined, search: search.value || undefined })
+    downloadBlob(blob, `lattice_audit_${view.value}_${period.value}.xlsx`)
+    ui.success(t('audit.exported'))
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    exporting.value = false
+  }
+}
+
+function openEntry(a: AuditOut) {
+  if (a.item_id) router.push(`/items/${a.item_id}`)
+  else if (a.template_id) router.push(`/templates/${a.template_id}`)
 }
 
 watch([view, period, limit], load)
@@ -69,13 +91,15 @@ onMounted(load)
     >
       <template #actions>
         <v-btn variant="tonal" icon="mdi-refresh" :loading="loading" @click="load" />
+        <v-btn color="primary" variant="tonal" prepend-icon="mdi-microsoft-excel" :loading="exporting" @click="exportExcel">
+          {{ $t('audit.export') }}
+        </v-btn>
       </template>
     </PageHeader>
 
     <v-card variant="flat" border>
       <v-card-text class="d-flex flex-wrap align-center gap-4">
         <v-btn-toggle
-          v-if="auth.isManager"
           v-model="view"
           color="primary"
           variant="outlined"
@@ -88,26 +112,20 @@ onMounted(load)
         </v-btn-toggle>
 
         <v-select
-          v-if="view === 'mine'"
           v-model="period"
           :label="$t('audit.period')"
           hide-details
           density="comfortable"
-          style="max-width: 160px"
-          :items="[
-            { title: $t('audit.lastDay'), value: 'day' },
-            { title: $t('audit.lastWeek'), value: 'week' },
-            { title: $t('audit.lastMonth'), value: 'month' },
-          ]"
+          style="max-width: 190px"
+          :items="periodItems"
         />
         <v-select
-          v-else
           v-model="limit"
           :label="$t('audit.show')"
           hide-details
           density="comfortable"
-          style="max-width: 140px"
-          :items="[25, 50, 100, 200]"
+          style="max-width: 120px"
+          :items="[100, 500, 1000, 5000]"
         />
 
         <v-spacer />
@@ -137,13 +155,14 @@ onMounted(load)
         </template>
         <template #item.item_name="{ item }">
           <a
-            v-if="item.item_id"
+            v-if="item.item_id || item.template_id"
             href="#"
             class="font-weight-medium"
-            @click.prevent="router.push(`/items/${item.item_id}`)"
+            @click.prevent="openEntry(item)"
           >
-            {{ item.item_name || `#${item.item_id}` }}
+            {{ item.item_name || `#${item.item_id ?? item.template_id}` }}
           </a>
+          <span v-else-if="item.item_name">{{ item.item_name }}</span>
           <span v-else class="text-medium-emphasis">—</span>
         </template>
         <template #item.action="{ item }">

@@ -726,11 +726,12 @@ def test_import_is_all_or_nothing_and_names_the_bad_cells(client, admin, templat
     fpga = next(s for s in wb.worksheets if s.title.startswith("C-FPG"))
     fpga.append([None, "a perfectly good row", "00003", "B"])
     fpga.append([None, "short", "12", "BB"])          # row 3: three bad cells
-    fpga.append(["C-PRB-999", "wrong serial prefix", None, None])  # row 4
+    fpga.append(["C-PRB-999", "short", None, None])  # row 4: bad serial *and* description
     r = _upload(client, admin, wb)
     assert r.status_code == 400
     cells = {(e["sheet"][:5], e["cell"]) for e in r.json()["errors"]}
-    assert {("C-FPG", "B3"), ("C-FPG", "C3"), ("C-FPG", "D3"), ("C-FPG", "A4")} <= cells
+    assert {("C-FPG", "B3"), ("C-FPG", "C3"), ("C-FPG", "D3"), ("C-FPG", "A4"),
+            ("C-FPG", "B4")} <= cells, "every bad cell of a row is reported, not just the first"
     assert len(client.get("/items", headers=admin).json()) == before, "nothing was saved"
 
 

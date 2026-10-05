@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useNotificationsStore } from '@/stores/notifications'
@@ -7,14 +7,14 @@ import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { CARD_TYPE_LABELS, timeAgo } from '@/constants'
-import type { LowStockComponent, NotificationItem } from '@/api/types'
+import type { LowStockComponent, NotificationItem, NotificationStatus } from '@/api/types'
 
 const store = useNotificationsStore()
 const ui = useUiStore()
 const router = useRouter()
 const { t } = useI18n({ useScope: 'global' })
 
-const unreadOnly = ref(false)
+const status = ref<NotificationStatus>('all')
 
 const typeMeta: Record<string, { icon: string; color: string }> = {
   'change_request.submitted': { icon: 'mdi-file-plus-outline', color: 'amber-darken-2' },
@@ -34,18 +34,17 @@ function components(n: NotificationItem): LowStockComponent[] {
   return n.payload?.components ?? []
 }
 
-const shown = computed(() =>
-  unreadOnly.value ? store.items.filter((n) => !n.read) : store.items,
-)
+const shown = computed(() => store.items)
 
 async function refresh() {
   try {
-    await store.fetchList(false)
-    await store.fetchUnreadCount()
+    await Promise.all([store.fetchList(status.value), store.fetchCounts()])
   } catch (e) {
     ui.error(e)
   }
 }
+
+watch(status, refresh)
 
 async function open(n: NotificationItem) {
   if (!n.read) {
@@ -93,14 +92,6 @@ onMounted(refresh)
       icon="mdi-bell-outline"
     >
       <template #actions>
-        <v-switch
-          v-model="unreadOnly"
-          :label="$t('notif.unreadOnly')"
-          color="primary"
-          hide-details
-          density="comfortable"
-          class="me-2"
-        />
         <v-btn
           variant="tonal"
           prepend-icon="mdi-email-open-outline"
@@ -114,6 +105,21 @@ onMounted(refresh)
     </PageHeader>
 
     <v-card variant="flat" border>
+      <v-tabs v-model="status" color="primary">
+        <v-tab value="all" prepend-icon="mdi-bell-outline">
+          {{ $t('notif.tabs.all') }}
+          <v-chip size="x-small" variant="tonal" class="ms-2">{{ store.counts.total }}</v-chip>
+        </v-tab>
+        <v-tab value="unread" prepend-icon="mdi-bell-badge-outline">
+          {{ $t('notif.tabs.unread') }}
+          <v-chip size="x-small" color="primary" variant="tonal" class="ms-2">{{ store.counts.unread }}</v-chip>
+        </v-tab>
+        <v-tab value="read" prepend-icon="mdi-email-open-outline">
+          {{ $t('notif.tabs.read') }}
+          <v-chip size="x-small" variant="tonal" class="ms-2">{{ store.counts.read }}</v-chip>
+        </v-tab>
+      </v-tabs>
+      <v-divider />
       <div v-if="store.loading && !store.items.length" class="pa-4">
         <v-skeleton-loader type="list-item-two-line@6" />
       </div>
@@ -139,8 +145,7 @@ onMounted(refresh)
                 <div
                   v-for="c in components(n)"
                   :key="c.threshold_id ?? c.name"
-                  class="low-stock-row"
-                  :class="{ 'low-stock-row--link': !!c.item_id }"
+                  class="low-stock-row low-stock-row--link"
                   @click.stop="openComponent(n, c)"
                 >
                   <v-icon icon="mdi-memory" size="16" class="me-2 text-medium-emphasis" />
@@ -148,7 +153,7 @@ onMounted(refresh)
                        instead of leaving the reader to search for the name. -->
                   <span class="font-weight-medium">{{ c.name }}</span>
                   <span v-if="c.version" class="text-medium-emphasis ms-1">v{{ c.version }}</span>
-                  <v-chip size="x-small" variant="tonal" class="ms-2">
+                  <v-chip v-if="c.card_type" size="x-small" variant="tonal" class="ms-2">
                     {{ CARD_TYPE_LABELS[c.card_type] }}
                   </v-chip>
                   <v-spacer />
@@ -181,8 +186,13 @@ onMounted(refresh)
           <v-divider v-if="i < shown.length - 1" />
         </template>
       </v-list>
+      <div v-if="store.hasMore && shown.length" class="d-flex justify-center pa-3">
+        <v-btn variant="tonal" :loading="store.loading" prepend-icon="mdi-chevron-down" @click="store.fetchMore()">
+          {{ $t('notif.loadMore') }}
+        </v-btn>
+      </div>
       <EmptyState
-        v-else
+        v-if="!shown.length && !store.loading"
         icon="mdi-bell-check-outline"
         :title="$t('notif.allCaught')"
         :text="$t('notif.allCaughtHint')"

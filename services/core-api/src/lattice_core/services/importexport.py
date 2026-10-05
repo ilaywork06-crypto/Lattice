@@ -296,12 +296,14 @@ def import_items(db: Session, content: bytes, user: User) -> dict:  # noqa: C901
             values = {f.key: cell(c) for c, f in columns.items() if cell(c) not in (None, "")}
 
             serial = cell(serial_col)
+            bad_serial = False
             if serial not in (None, ""):
                 try:
                     serials_svc.validate_manual(db, tpl, str(serial))
                 except DomainError as exc:
+                    # Keep checking the rest of the row: every bad cell is reported.
                     err(ws.title, r, serial_col, str(exc), SERIAL_HEADER)
-                    continue
+                    bad_serial = True
 
             child_ids: list[int] = []
             contents = cell(contents_col)
@@ -324,7 +326,8 @@ def import_items(db: Session, content: bytes, user: User) -> dict:  # noqa: C901
                 item = item_svc.create_item(
                     db,
                     {"template_id": tpl.id, "values": values,
-                     "serial": str(serial) if serial not in (None, "") else None},
+                     "serial": str(serial) if serial not in (None, "") and not bad_serial
+                     else None},
                     user,
                 )
                 db.flush()
@@ -343,7 +346,7 @@ def import_items(db: Session, content: bytes, user: User) -> dict:  # noqa: C901
                 except DomainError as exc:
                     err(ws.title, r, contents_col, str(exc), CONTENTS_HEADER)
                     bad_contents = True
-            if bad_contents:
+            if bad_contents or bad_serial:
                 row_sp.rollback()
                 continue
             row_sp.commit()

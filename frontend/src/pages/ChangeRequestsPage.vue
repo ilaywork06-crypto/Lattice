@@ -89,14 +89,34 @@ watch(detailOpen, (open) => {
   if (!open && route.params.id) router.replace('/change-requests')
 })
 
+function show(v: unknown): string {
+  if (v === null || v === undefined || v === '') return '—'
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => (x && typeof x === 'object' ? (x as { label?: string }).label ?? JSON.stringify(x) : String(x)))
+      .join(', ')
+  }
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
+/** The proposal's details, one row per value (an item's `values` are spread out). */
 const payloadRows = computed(() => {
   if (!selected.value) return []
-  return Object.entries(selected.value.payload || {})
-    .filter(([, v]) => v !== null && v !== undefined && v !== '')
-    .map(([k, v]) => ({
-      key: k,
-      value: Array.isArray(v) ? v.join(', ') : String(v),
-    }))
+  const rows: { key: string; value: string }[] = []
+  for (const [k, v] of Object.entries(selected.value.payload || {})) {
+    if (v === null || v === undefined || v === '') continue
+    if (k === 'values' && v && typeof v === 'object' && !Array.isArray(v)) {
+      for (const [fk, fv] of Object.entries(v as Record<string, unknown>)) {
+        rows.push({ key: fk, value: show(fv) })
+      }
+    } else if (k === 'fields' && Array.isArray(v)) {
+      rows.push({ key: t('cr.fields'), value: show(v) })
+    } else {
+      rows.push({ key: k, value: show(v) })
+    }
+  }
+  return rows
 })
 
 async function review(action: 'approve' | 'reject') {
@@ -231,6 +251,13 @@ onMounted(async () => {
                   v-if="selected.item_id"
                   href="#"
                   @click.prevent="router.push(`/items/${selected.item_id}`)"
+                >
+                  {{ selected.item_name }}
+                </a>
+                <a
+                  v-else-if="selected.template_id"
+                  href="#"
+                  @click.prevent="router.push(`/templates/${selected.template_id}`)"
                 >
                   {{ selected.item_name }}
                 </a>

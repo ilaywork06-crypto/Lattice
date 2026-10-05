@@ -3,11 +3,14 @@
 // ---------------------------------------------------------------------------
 
 export type ItemType = 'setup' | 'assembly' | 'card'
-export type CardType = 'commercial' | 'company' | 'unique'
+/** copied (formerly "unique"), house (formerly "company"), white, factory,
+ *  commercial. Only a commercial card holds a quantity. */
+export type CardType = 'copied' | 'house' | 'white' | 'factory' | 'commercial'
 /** How a card's stock is counted: one row holding a quantity of interchangeable
- *  parts (commercial), or one row per physical unit keyed by serial. */
+ *  parts (commercial), or one row per physical unit. */
 export type CardTracking = 'quantity' | 'serial'
-export type ItemState = 'production' | 'built' | 'used' | 'working' | 'faulty'
+export type ItemState = 'built' | 'ok' | 'faulty' | 'destroyed'
+/** Derived from parent + location (never stored). */
 export type StorageStatus = 'assembled' | 'in_use' | 'desiccator'
 export type UserRole = 'viewer' | 'editor' | 'manager'
 export type ChangeStatus = 'pending' | 'approved' | 'rejected'
@@ -19,6 +22,35 @@ export type ChangeAction =
   | 'link'
   | 'unlink'
   | 'state_change'
+  | 'template_create'
+  | 'template_update'
+
+/** fixed = white (set on the template, shared by every item);
+ *  choice = white with a list (template defines the list, item picks; first = default);
+ *  item = grey (filled in when an item is created). */
+export type FieldMode = 'fixed' | 'choice' | 'item'
+export type FieldType =
+  | 'text'
+  | 'description'
+  | 'string'
+  | 'serial_string'
+  | 'link'
+  | 'enum'
+  | 'letter'
+  | 'date'
+  | 'integer'
+  | 'decimal'
+  | 'boolean'
+  | 'files'
+  | 'industry'
+  | 'project'
+  | 'team'
+  | 'managers'
+  | 'responsible'
+  | 'location'
+  | 'parent'
+  | 'status'
+  | 'quantity'
 
 // ---- Auth -----------------------------------------------------------------
 export interface LoginResponse {
@@ -63,14 +95,19 @@ export interface LocationOut {
   x: number
   y: number
   notes: string | null
+  /** Part of the desiccator group: loose cards here are available stock. */
+  is_desiccator: boolean
   item_count: number
 }
 
-export interface LocationBrief {
-  id: number
-  name: string
+export interface LocationBody {
+  name?: string
   building?: string | null
   room?: string | null
+  x?: number
+  y?: number
+  notes?: string | null
+  is_desiccator?: boolean
 }
 
 // ---- Map buildings (editable floor-plan background) ------------------------
@@ -99,50 +136,163 @@ export interface MapBuildingCreate {
 
 export type MapBuildingUpdate = Partial<MapBuildingCreate>
 
-// ---- Items ----------------------------------------------------------------
-export interface ItemBrief {
+// ---- Templates --------------------------------------------------------------
+export interface DocumentOut {
+  id: number
+  name: string
+  doc_type: string | null
+  url: string | null
+  is_file: boolean
+  original_filename: string | null
+  content_type: string | null
+  size_bytes: number | null
+  field_id: number | null
+  created_at: string | null
+}
+
+export interface FieldConfig {
+  /** A list field's values (ids for reference types) / an enum's strings. */
+  options?: unknown[]
+  /** "XX-#####": # is a digit the user types, the rest is filled in. */
+  pattern?: string
+  /** Description: minimum non-blank characters. */
+  min_length?: number
+}
+
+export interface TemplateFieldIn {
+  id?: number | null
+  key?: string | null
+  label: string
+  field_type: FieldType
+  mode: FieldMode
+  required: boolean
+  config: FieldConfig
+  fixed_value?: unknown
+}
+
+export interface TemplateFieldOut {
+  id: number
+  key: string
+  label: string
+  field_type: FieldType
+  mode: FieldMode
+  required: boolean
+  position: number
+  config: FieldConfig
+  fixed_value: unknown
+  fixed_display: unknown
+  /** Labels of a list field's options, aligned with config.options. */
+  options_display: string[]
+  files: DocumentOut[]
+}
+
+export interface TemplateBrief {
   id: number
   type: ItemType
   name: string
+  card_type: CardType | null
+  serial_prefix: string
+}
+
+/** Units per state; `total` excludes destroyed ones. */
+export interface TemplateCounts {
+  built: number
+  ok: number
+  faulty: number
+  total: number
+  destroyed: number
+}
+
+export interface TemplateSummary extends TemplateBrief {
+  tracking: CardTracking | null
+  description: string | null
+  counts: TemplateCounts
+  child_template_ids: number[]
+  parent_template_ids: number[]
+  field_count: number
+  updated_at: string | null
+}
+
+export interface TemplateOut extends TemplateSummary {
+  fields: TemplateFieldOut[]
+  child_templates: TemplateBrief[]
+  parent_templates: TemplateBrief[]
+  next_serial: string | null
+  created_at: string | null
+}
+
+export interface TemplateCreate {
+  type: ItemType
+  name: string
+  card_type?: CardType | null
+  serial_prefix: string
+  description?: string | null
+  fields: TemplateFieldIn[]
+  child_template_ids: number[]
+}
+
+export type TemplateUpdate = Partial<Omit<TemplateCreate, 'type'>>
+
+// ---- Items ----------------------------------------------------------------
+export interface CatalogRef {
+  id: number
+  value: string
+}
+
+export interface ItemBrief {
+  id: number
+  type: ItemType
+  template_id: number
+  name: string
+  serial: string
   state: ItemState
   card_type?: CardType | null
+  location_id?: number | null
 }
 
 export interface ItemListOut {
   id: number
   type: ItemType
+  template_id: number
   name: string
-  industry: string | null
-  project: string | null
-  team: string | null
+  serial: string
   state: ItemState
   card_type: CardType | null
-  version: string | null
-  serial: string | null
   quantity: number
   storage_status: StorageStatus | null
   parent_id: number | null
+  parent_label: string | null
   location_id: number | null
   location_name: string | null
+  industry: string | null
+  project: string | null
+  team: string | null
   children_count: number
-  is_template: boolean
   manager_names: string[]
   updated_at: string
 }
 
-export interface StateHistoryEntry {
-  id?: number
-  state: ItemState
-  note: string | null
-  changed_by?: string | null
-  created_at: string
+export interface ItemField {
+  field_id: number
+  key: string
+  label: string
+  field_type: FieldType
+  mode: FieldMode
+  required: boolean
+  config: FieldConfig
+  value: unknown
+  /** Human-readable value: names for ids, documents for files. */
+  display: unknown
+  missing: boolean
 }
 
-export interface DocumentOut {
+export interface StateHistoryEntry {
   id: number
-  name: string
-  url: string | null
-  doc_type: string | null
+  state: ItemState
+  note: string | null
+  changed_by: number | null
+  changed_by_name: string | null
+  changed_at: string
 }
 
 export interface ExtraItemOut {
@@ -156,83 +306,69 @@ export interface ExtraItemOut {
 export interface ItemOut {
   id: number
   type: ItemType
-  is_template: boolean
+  template: TemplateBrief
   name: string
-  industry: string | null
-  project: string | null
-  team: string | null
+  serial: string
   state: ItemState
-  description: string | null
-  dmz: string | null
   card_type: CardType | null
-  responsible: string | null
-  lead: string | null
-  production_date: string | null
-  version: string | null
-  serial: string | null
-  /** Units on this row. Always 1 for serial-tracked cards and non-cards. */
+  tracking: CardTracking | null
   quantity: number
   storage_status: StorageStatus | null
   parent_id: number | null
   location_id: number | null
-  updated_at: string
-  created_at?: string
-  location: LocationBrief | null
+  location: LocationOut | null
   parent: ItemBrief | null
   children: ItemBrief[]
+  industry: CatalogRef | null
+  project: CatalogRef | null
+  team: CatalogRef | null
+  responsible: UserBrief | null
   managers: UserBrief[]
+  fields: ItemField[]
   state_history: StateHistoryEntry[]
   documents: DocumentOut[]
   extra_items: ExtraItemOut[]
+  child_templates: TemplateBrief[]
+  created_at: string
+  updated_at: string
 }
 
 export interface ItemCreate {
-  type: ItemType
-  name: string
-  industry?: string | null
-  project?: string | null
-  team?: string | null
-  state?: ItemState
-  description?: string | null
-  dmz?: string | null
-  location_id?: number | null
-  parent_id?: number | null
-  is_template?: boolean
-  card_type?: CardType | null
-  responsible?: string | null
-  lead?: string | null
-  production_date?: string | null
-  version?: string | null
+  template_id: number
+  /** {field key: value} for the template's per-item and list fields. */
+  values: Record<string, unknown>
+  /** Leave empty to get the template's next serial. */
   serial?: string | null
-  quantity?: number
-  storage_status?: StorageStatus | null
-  manager_ids?: number[]
   child_ids?: number[]
 }
 
-export type ItemUpdate = Partial<Omit<ItemCreate, 'type'>> & {
-  /** Explains a state transition. Required when moving into or out of `faulty`;
-   *  update-only, since creating an item sets an initial state, not a transition. */
-  state_note?: string | null
+export interface ItemUpdate {
+  /** Only the fields being changed. */
+  values?: Record<string, unknown>
+  serial?: string | null
 }
 
 export interface ItemQuery {
   type?: ItemType
+  template_id?: number
   state?: ItemState
   card_type?: CardType
   storage_status?: StorageStatus
-  project?: string
-  industry?: string
   location_id?: number
+  parent_id?: number
   unassigned?: boolean
-  templates?: boolean
+  include_destroyed?: boolean
+  /** Items whose template may be placed inside this template. */
+  child_of_template?: number
+  /** Items whose template may contain this template. */
+  parent_of_template?: number
   search?: string
   limit?: number
   offset?: number
 }
 
 // ---- Catalog (admin vocabularies) -----------------------------------------
-export type CatalogCategory = 'project' | 'industry'
+export type CatalogCategory = 'project' | 'industry' | 'team'
 
 export interface CatalogOption {
   id: number
@@ -242,6 +378,8 @@ export interface CatalogOption {
   active: boolean
   sort_order: number
   usage_count: number
+  /** Values of other categories this one is linked to (two-way). */
+  linked_ids: number[]
 }
 
 export interface CatalogOptionCreate {
@@ -272,7 +410,7 @@ export interface BulkResult {
 
 // ---- Global search --------------------------------------------------------
 export interface SearchHit {
-  kind: 'item' | 'location' | 'user' | 'change_request'
+  kind: 'item' | 'template' | 'location' | 'user'
   id: number
   title: string
   subtitle: string | null
@@ -285,6 +423,7 @@ export interface SearchResults {
   query: string
   total: number
   items: SearchHit[]
+  templates: SearchHit[]
   locations: SearchHit[]
   users: SearchHit[]
 }
@@ -293,9 +432,11 @@ export interface SearchResults {
 export interface ChangeRequestCreate {
   action: ChangeAction
   item_id?: number | null
+  template_id?: number | null
   item_type?: ItemType | null
   payload: Record<string, unknown>
-  description: string
+  /** What changes — generated from the action when left out. */
+  description?: string | null
   reason: string
 }
 
@@ -303,6 +444,7 @@ export interface ChangeRequestOut {
   id: number
   action: ChangeAction
   item_id: number | null
+  template_id: number | null
   item_type: ItemType | null
   item_name: string | null
   payload: Record<string, unknown>
@@ -325,50 +467,49 @@ export interface InventorySummary {
   cards: number
   cards_in_use: number
   cards_desiccator: number
+  cards_available: number
   faulty_items: number
   pending_change_requests: number
   low_stock_alerts: number
+  templates: number
 }
 
+/** Stock of one card template. */
 export interface InventoryGroup {
-  card_type: CardType
-  /** How `total` was arrived at — summed quantities, or one row per unit. */
-  tracking: CardTracking | null
+  template_id: number
   name: string
-  version: string | null
-  production_date: string | null
+  card_type: CardType
+  tracking: CardTracking | null
+  serial_prefix: string
   total: number
-  in_use: number
+  /** Built/ok, loose, at a desiccator location — what can be built with. */
+  available: number
   desiccator: number
+  in_use: number
   assembled: number
-  /** How many item rows add up to `total`. */
+  faulty: number
   records: number
-  serials: string[]
+  available_serials: string[]
+  min_quantity: number | null
+  is_low: boolean
 }
 
 export interface ThresholdOut {
   id: number
-  /** The card this threshold was created from — what its alerts link to. */
-  item_id: number | null
-  card_type: CardType
-  tracking: CardTracking | null
+  template_id: number
   name: string
-  version: string | null
+  card_type: CardType | null
+  tracking: CardTracking | null
   min_quantity: number
   editor_email: string | null
   current_quantity: number
   is_low: boolean
 }
 
-/** Created from an existing card: the server derives the watched group
- *  (card type, name, version) from `item_id`, so a threshold can never point at
- *  a model nobody stocks. */
 export interface ThresholdCreate {
-  item_id: number
+  template_id: number
   min_quantity: number
   editor_email?: string | null
-  /** Watch every version of that card's model, not just its own. */
-  any_version?: boolean
 }
 
 // ---- Graph ----------------------------------------------------------------
@@ -376,8 +517,12 @@ export interface GraphNode {
   id: number
   label: string
   type: ItemType
-  state: ItemState
+  state: ItemState | null
   card_type: CardType | null
+  serial: string | null
+  template_id: number | null
+  /** Template graph: live units made from the template. */
+  count: number | null
 }
 
 export interface GraphEdge {
@@ -388,28 +533,54 @@ export interface GraphEdge {
 export interface GraphOut {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  roots: number[]
 }
 
 // ---- Audit ----------------------------------------------------------------
+export type AuditPeriod = 'day' | 'week' | 'month' | 'half_year' | 'year' | 'all'
+
 export interface AuditOut {
   id: number
   item_id: number | null
+  template_id: number | null
   item_name: string | null
   action: string
   summary: string
-  details: string | null
+  details: Record<string, unknown>
   user_id: number | null
   user_name: string | null
   created_at: string
 }
 
+export interface AuditQuery {
+  item_id?: number
+  template_id?: number
+  period?: AuditPeriod
+  mine?: boolean
+  action?: string
+  search?: string
+  limit?: number
+}
+
 // ---- Import / Export ------------------------------------------------------
+export interface ImportCellError {
+  sheet: string
+  /** A1 reference, e.g. "C5" (null for sheet-level problems). */
+  cell: string | null
+  row: number | null
+  column: string | null
+  error: string
+}
+
 export interface ImportResult {
   created: number
-  errors: { row: number; error: string }[]
+  by_template: Record<string, number>
+  errors: ImportCellError[]
 }
 
 // ---- Notifications --------------------------------------------------------
+export type NotificationStatus = 'all' | 'unread' | 'read'
+
 export interface NotificationItem {
   id: number
   type: string
@@ -423,16 +594,22 @@ export interface NotificationItem {
   created_at: string
 }
 
+export interface NotificationCounts {
+  total: number
+  unread: number
+  read: number
+}
+
 export interface LowStockComponent {
   threshold_id: number
-  /** The card the threshold was created from (null if it was since deleted). */
-  item_id: number | null
-  /** Where to go to act on it — the card itself, or /inventory as a fallback. */
+  template_id?: number | null
+  /** Older alerts pointed at a card; newer ones at the card's template. */
+  item_id?: number | null
   link: string
   name: string
-  card_type: CardType
+  card_type: CardType | null
   tracking: CardTracking | null
-  version: string | null
+  version?: string | null
   current_quantity: number
   min_quantity: number
   /** How many units to add to climb back above the minimum. */

@@ -49,8 +49,8 @@ const stats = computed<Stat[]>(() => {
       to: '/cards',
     },
     {
-      label: t('dash.stats.cardsDesiccator'),
-      value: s.cards_desiccator,
+      label: t('dash.stats.cardsAvailable'),
+      value: s.cards_available,
       icon: 'mdi-water-off',
       color: 'cyan-darken-2',
       to: '/inventory',
@@ -163,16 +163,13 @@ onMounted(load)
           <v-divider />
           <template v-if="lowStock.length">
             <v-list lines="two" density="comfortable">
-              <v-list-item v-for="t in lowStock" :key="t.id" @click="router.push('/inventory')">
+              <v-list-item v-for="t in lowStock" :key="t.id" @click="router.push(`/cards?template=${t.template_id}`)">
                 <template #prepend>
                   <v-avatar color="warning" variant="tonal" size="40">
                     <v-icon icon="mdi-memory" />
                   </v-avatar>
                 </template>
-                <v-list-item-title class="font-weight-medium">
-                  {{ t.name }}
-                  <span v-if="t.version" class="text-medium-emphasis">· v{{ t.version }}</span>
-                </v-list-item-title>
+                <v-list-item-title class="font-weight-medium">{{ t.name }}</v-list-item-title>
                 <v-list-item-subtitle>
                   {{ $t('dash.inStock', { current: t.current_quantity, min: t.min_quantity }) }}
                 </v-list-item-subtitle>
@@ -209,7 +206,7 @@ onMounted(load)
                 v-for="a in activity"
                 :key="a.id"
                 :subtitle="a.summary"
-                @click="a.item_id && router.push(`/items/${a.item_id}`)"
+                @click="a.item_id ? router.push(`/items/${a.item_id}`) : a.template_id && router.push(`/templates/${a.template_id}`)"
               >
                 <template #prepend>
                   <v-avatar color="surface-variant" size="38">

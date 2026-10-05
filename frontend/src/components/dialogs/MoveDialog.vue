@@ -65,15 +65,28 @@ function submit() {
         <p class="text-body-2 text-medium-emphasis mb-4">
           {{ $t('dlg.move.desc') }}
         </p>
-        <v-select
+        <v-autocomplete
           v-model="locationId"
           :label="$t('dlg.move.destination')"
-          :items="locations.map((l) => ({ title: l.name, value: l.id, subtitle: l.building }))"
+          :items="locations.map((l) => ({ title: l.name, value: l.id, subtitle: l.is_desiccator ? $t('fieldInput.desiccator') : l.building ?? undefined }))"
+          item-title="title"
+          item-value="value"
           :error="locError"
           :error-messages="locError ? $t('dlg.move.selectDest') : ''"
           @update:model-value="locError = false"
+        >
+          <template #item="{ props: itemProps, item }">
+            <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
+          </template>
+        </v-autocomplete>
+        <v-textarea
+          v-model="note"
+          :label="direct ? $t('dlg.noteOptional') : $t('dlg.move.reasonLabel')"
+          :hint="direct ? undefined : $t('dlg.move.reasonHint')"
+          :persistent-hint="!direct"
+          rows="2"
+          auto-grow
         />
-        <v-textarea v-model="note" :label="$t('dlg.noteOptional')" rows="2" auto-grow />
         <v-alert v-if="error" type="error" variant="tonal" density="compact" :text="error" />
       </v-card-text>
       <v-divider />

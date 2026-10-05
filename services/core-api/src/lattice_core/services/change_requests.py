@@ -69,7 +69,13 @@ def resolve_managers(db: Session, item: Item | None) -> list[User]:
     return db.query(User).filter(User.role == UserRole.manager, User.is_active).all()
 
 
-def _auto_description(db: Session, action: ChangeAction, payload: dict, target: str | None) -> str:
+def _auto_description(
+    db: Session,
+    action: ChangeAction,
+    payload: dict,
+    target: str | None,
+    template: ItemTemplate | None = None,
+) -> str:
     """A readable "what" for proposals that didn't spell one out.
 
     The proposer is asked *why* (the reason) once; *what* is already fully
@@ -92,8 +98,11 @@ def _auto_description(db: Session, action: ChangeAction, payload: dict, target: 
     if action == ChangeAction.create:
         return f"Create a new{name} item"
     if action == ChangeAction.update:
-        fields = ", ".join((payload.get("values") or {}).keys())
-        return f"Edit{name}" + (f" ({fields})" if fields else "")
+        labels = {f.key: f.label for f in template.fields} if template is not None else {}
+        changed = [labels.get(k, k) for k in (payload.get("values") or {})]
+        if payload.get("serial"):
+            changed.append("serial")
+        return f"Edit{name}" + (f" ({', '.join(changed)})" if changed else "")
     if action == ChangeAction.template_create:
         return f"Create the template '{payload.get('name')}'"
     if action == ChangeAction.template_update:
@@ -140,7 +149,9 @@ def create_change_request(db: Session, data: dict, user: User) -> ChangeRequest:
         item_name=target,
         payload=payload,
         description=(data.get("description") or "").strip()
-        or _auto_description(db, action, payload, target),
+        or _auto_description(
+            db, action, payload, target, item.template if item is not None else template
+        ),
         reason=data["reason"].strip(),
         proposed_by=user.id,
         status=ChangeStatus.pending,
