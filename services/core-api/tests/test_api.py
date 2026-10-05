@@ -1,6 +1,38 @@
-"""End-to-end behavioural tests for the Lattice core API."""
+"""API tests for the template-driven model.
+
+The session-scoped world (see conftest.py) is shared, so tests that change it
+create their own items rather than editing the fixtures' ones.
+"""
+
+import io
+
+from openpyxl import Workbook, load_workbook
 
 
+def _tpl(client, admin, prefix):
+    for t in client.get("/templates", headers=admin).json():
+        if t["serial_prefix"] == prefix:
+            return t
+    raise AssertionError(prefix)
+
+
+def _new(client, headers, template_id, expect=201, **values):
+    r = client.post("/items", json={"template_id": template_id, "values": values},
+                    headers=headers)
+    assert r.status_code == expect, r.text
+    return r.json()
+
+
+def _loc(client, admin, name):
+    return next(loc for loc in client.get("/locations", headers=admin).json()
+                if loc["name"] == name)
+
+
+def _users(client, admin):
+    return {u["email"]: u for u in client.get("/users", headers=admin).json()}
+
+
+# ─────────────────────────── basics & roles ───────────────────────────
 def test_health(client):
     assert client.get("/health").json()["status"] == "ok"
 
@@ -10,1025 +42,778 @@ def test_auth_and_roles(client, viewer):
     assert me["role"] == "viewer"
 
 
-def test_viewer_cannot_mutate(client, viewer, a_setup):
-    r = client.post(f"/items/{a_setup}/move", headers=viewer, json={"location_id": 1})
-    assert r.status_code == 403
+def test_viewer_and_editor_cannot_mutate_directly(client, viewer, editor, a_setup):
+    for headers in (viewer, editor):
+        assert client.patch(f"/items/{a_setup}", json={"values": {}},
+                            headers=headers).status_code == 403
+        assert client.post("/templates", json={}, headers=headers).status_code in (403, 422)
 
 
-def test_editor_cannot_mutate_directly(client, editor, a_setup):
-    r = client.post(f"/items/{a_setup}/move", headers=editor, json={"location_id": 1})
-    assert r.status_code == 403
+# ─────────────────────────── templates ───────────────────────────
+def _template_body(**over):
+    body = {"type": "card", "name": "Test Card", "card_type": "white",
+            "serial_prefix": "TST", "fields": []}
+    body.update(over)
+    return body
 
 
-def test_inventory_summary(client, admin):
-    s = client.get("/inventory/summary", headers=admin).json()
-    assert s["setups"] >= 1 and s["assemblies"] >= 1
-    assert s["cards"] >= s["cards_desiccator"] >= 1
-    # The tile counts physical units, so it must equal the inventory table it
-    # summarises — a dashboard that disagrees with /inventory is exactly the
-    # "where does this number come from?" problem.
-    groups = client.get("/inventory/cards", headers=admin).json()
-    assert s["cards"] == sum(g["total"] for g in groups)
+def test_template_rules_are_enforced(client, admin):
+    cases = [
+        (_template_body(serial_prefix="T1X"), "three Latin letters"),
+        (_template_body(serial_prefix="PRB"), "already used"),
+        (_template_body(name="power regulator board"), "already exists"),
+        (_template_body(card_type=None), "card type"),
+        (_template_body(type="setup"), "Only card templates"),
+        (_template_body(fields=[{"label": "Q", "field_type": "quantity"}]), "commercial"),
+        (_template_body(fields=[{"label": "Where", "field_type": "location",
+                                 "mode": "fixed"}]), "per item"),
+        (_template_body(fields=[{"label": "Kind", "field_type": "enum"}]), "at least one"),
+        (_template_body(fields=[{"label": "Pick", "field_type": "text", "mode": "choice"}]),
+         "list field needs"),
+        (_template_body(fields=[{"label": "Owner", "field_type": "text", "mode": "fixed",
+                                 "required": True}]), "needs its value"),
+        (_template_body(fields=[{"label": "A", "field_type": "team"},
+                                {"label": "B", "field_type": "team"}]), "only one team"),
+        (_template_body(fields=[{"label": "A", "field_type": "text"},
+                                {"label": "a", "field_type": "text"}]), "two fields"),
+        (_template_body(fields=[{"label": "Code", "field_type": "string",
+                                 "config": {"pattern": "XX-"}}]), "#"),
+    ]
+    for body, message in cases:
+        r = client.post("/templates", json=body, headers=admin)
+        assert r.status_code == 400, (body, r.text)
+        assert message.lower() in r.json()["detail"].lower(), (message, r.text)
 
 
-def test_card_groups_grouped_by_version(client, admin):
-    groups = client.get("/inventory/cards", headers=admin).json()
-    names = {(g["name"], g["version"]) for g in groups}
-    assert ("Power Regulator Board", "1.2") in names
-    assert ("Power Regulator Board", "1.3") in names
+def test_template_children_respect_the_hierarchy(client, admin, templates):
+    r = client.post("/templates", json={
+        "type": "assembly", "name": "Bad Assembly", "serial_prefix": "BAD",
+        "child_template_ids": [templates["FTS"]],
+    }, headers=admin)
+    assert r.status_code == 400
+    assert "cannot contain setup" in r.json()["detail"]
 
 
-def test_low_stock_detected(client, admin):
-    low = client.get("/inventory/low-stock", headers=admin).json()
-    assert any(t["name"] == "FPGA Processing Core" and t["is_low"] for t in low)
+def test_template_detail_exposes_fields_children_and_next_serial(client, admin, templates):
+    t = client.get(f"/templates/{templates['SPM']}", headers=admin).json()
+    assert [c["serial_prefix"] for c in t["child_templates"]] == ["PRB", "FPG"]
+    assert [p["serial_prefix"] for p in t["parent_templates"]] == ["FTS"]
+    team = next(f for f in t["fields"] if f["key"] == "team")
+    assert team["mode"] == "fixed" and team["fixed_display"] == "HW-Team-A"
+    assert t["next_serial"] == "A-SPM-002"
 
 
-def test_state_machine_requires_note_for_fault(client, admin, a_setup):
-    r = client.post(f"/items/{a_setup}/state", headers=admin, json={"state": "faulty"})
-    assert r.status_code == 400  # no note → rejected
-
-    ok = client.post(
-        f"/items/{a_setup}/state",
-        headers=admin,
-        json={"state": "faulty", "note": "PSU failed"},
-    )
-    assert ok.status_code == 200
-    # restore
-    client.post(
-        f"/items/{a_setup}/state",
-        headers=admin,
-        json={"state": "working", "note": "fixed"},
-    )
+def test_grouped_counts_exclude_destroyed(client, admin, templates):
+    tid = templates["FPG"]
+    before = next(t for t in client.get("/templates?type=card", headers=admin).json()
+                  if t["id"] == tid)["counts"]
+    item = _new(client, admin, tid, description="Spare board for testing")
+    client.post(f"/items/{item['id']}/state", json={"state": "destroyed"}, headers=admin)
+    after = next(t for t in client.get("/templates?type=card", headers=admin).json()
+                 if t["id"] == tid)["counts"]
+    assert after["total"] == before["total"]
+    assert after["destroyed"] == before["destroyed"] + 1
 
 
-def test_move_cascades_to_children(client, admin, manager, a_setup):
-    # link rule check first
-    detail = client.get(f"/items/{a_setup}", headers=admin).json()
-    assert len(detail["children"]) >= 1
-
-    client.post(f"/items/{a_setup}/move", headers=admin, json={"location_id": 2})
-    after = client.get(f"/items/{a_setup}", headers=admin).json()
-    assert after["location_id"] == 2
-    for child in after["children"]:
-        assert child["location_id"] == 2
+def test_items_of_a_template_list_state_location_parent_serial(client, admin, templates):
+    rows = client.get(f"/items?template_id={templates['PRB']}", headers=admin).json()
+    assert all(r["template_id"] == templates["PRB"] for r in rows)
+    assembled = next(r for r in rows if r["serial"] == "C-PRB-001")
+    assert assembled["parent_label"] == "Signal Processing Module (A-SPM-001)"
+    assert assembled["location_name"] == "Integration Hall"
+    assert assembled["storage_status"] == "assembled"
 
 
-def test_edit_form_can_change_location_and_it_cascades(client, admin, a_setup):
-    """The edit dialog sends `location_id` in its PATCH body alongside the other
-    fields. It used to be dropped silently (absent from ItemUpdate), so the save
-    reported success while the item never moved."""
-    before = client.get(f"/items/{a_setup}", headers=admin).json()
-    assert before["children"], "need a container with contents to prove the cascade"
-    target = 3 if before["location_id"] != 3 else 2
+# ─────────────────────────── creation from a template ───────────────────────────
+def test_items_are_created_only_from_a_template(client, admin):
+    assert client.post("/items", json={"values": {}}, headers=admin).status_code == 422
+    r = client.post("/items", json={"template_id": 9999}, headers=admin)
+    assert r.status_code == 400 and "template" in r.json()["detail"]
 
-    r = client.patch(
-        f"/items/{a_setup}",
-        headers=admin,
-        json={"name": before["name"], "location_id": target},
-    )
+
+def test_serials_are_issued_per_template_and_unique(client, admin, templates):
+    tid = templates["NIC"]
+    a = _new(client, admin, tid, quantity=2)
+    b = _new(client, admin, tid, quantity=1)
+    num = lambda s: int(s.rsplit("-", 1)[1])  # noqa: E731
+    assert a["serial"].startswith("C-NIC-") and num(b["serial"]) == num(a["serial"]) + 1
+
+    manual = client.post("/items", json={"template_id": tid, "serial": "c-nic-050",
+                                         "values": {"quantity": 1}}, headers=admin)
+    assert manual.status_code == 201 and manual.json()["serial"] == "C-NIC-050"
+    nxt = _new(client, admin, tid, quantity=1)
+    assert nxt["serial"] == "C-NIC-051", "numbering continues above the highest"
+
+    for bad, why in (("C-NIC-050", "already used"), ("A-NIC-099", "starts with 'C-'"),
+                     ("C-PRB-099", "prefix 'NIC'"), ("NIC-1", "not a valid serial")):
+        r = client.post("/items", json={"template_id": tid, "serial": bad,
+                                        "values": {"quantity": 1}}, headers=admin)
+        assert r.status_code == 400 and why in r.json()["detail"], (bad, r.text)
+
+    # a manual edit keeps the scheme and refuses duplicates too
+    r = client.patch(f"/items/{a['id']}", json={"serial": "C-NIC-050"}, headers=admin)
+    assert r.status_code == 400
+    r = client.patch(f"/items/{a['id']}", json={"serial": "C-NIC-777"}, headers=admin)
+    assert r.status_code == 200 and r.json()["serial"] == "C-NIC-777"
+
+
+def test_new_items_are_built_unless_a_status_is_chosen(client, admin, templates):
+    tid = templates["PRB"]
+    default = _new(client, admin, tid)
+    assert default["state"] == "built"
+    chosen = _new(client, admin, tid, status="ok")
+    assert chosen["state"] == "ok"
+    r = client.post("/items", json={"template_id": tid, "values": {"status": "faulty"}},
+                    headers=admin)
+    assert r.status_code == 400, "faulty is not in this template's list"
+
+
+def test_list_field_defaults_to_the_head_and_refuses_other_values(client, admin, templates):
+    tid = templates["PRB"]
+    item = _new(client, admin, tid)
+    version = next(f for f in item["fields"] if f["key"] == "version")
+    assert version["value"] == "1.3", "the first list value is the default"
+    other = _new(client, admin, tid, version="1.2")
+    assert next(f for f in other["fields"] if f["key"] == "version")["value"] == "1.2"
+    r = client.post("/items", json={"template_id": tid, "values": {"version": "9.9"}},
+                    headers=admin)
+    assert r.status_code == 400
+
+
+def test_template_values_cannot_be_overridden_per_item(client, admin, templates):
+    r = client.post("/items", json={"template_id": templates["PRB"],
+                                    "values": {"project": "Sparrow"}}, headers=admin)
+    assert r.status_code == 400
+    errors = r.json()["errors"]
+    assert errors[0]["field"] == "project" and "template" in errors[0]["error"]
+
+
+def test_every_invalid_field_is_reported_at_once(client, admin, templates):
+    r = client.post("/items", json={
+        "template_id": templates["FPG"],
+        "values": {"description": "short", "board_id": "12", "letter": "ab", "nope": 1},
+    }, headers=admin)
+    assert r.status_code == 400
+    fields = {e["field"] for e in r.json()["errors"]}
+    assert {"description", "board_id", "letter", "nope"} <= fields
+
+
+def test_formats_letters_and_descriptions(client, admin, templates):
+    item = _new(client, admin, templates["FPG"], description="   eight chars!  ",
+                board_id="54321", letter="q")
+    values = {f["key"]: f["value"] for f in item["fields"]}
+    assert values["board_id"] == "FP-54321", "the fixed letters are filled in automatically"
+    assert values["letter"] == "Q"
+    assert values["description"] == "eight chars!"
+    # the full form is accepted as well
+    again = _new(client, admin, templates["FPG"], description="another board",
+                 board_id="FP-11111")
+    assert {f["key"]: f["value"] for f in again["fields"]}["board_id"] == "FP-11111"
+
+
+def test_new_cards_default_to_the_desiccator(client, admin, templates):
+    item = _new(client, admin, templates["NIC"], quantity=1)
+    assert item["location"]["is_desiccator"] is True
+    assert item["storage_status"] == "desiccator"
+
+
+def test_only_commercial_cards_carry_a_quantity(client, admin, templates):
+    r = client.post("/items", json={"template_id": templates["FPG"],
+                                    "values": {"description": "board", "quantity": 3}},
+                    headers=admin)
+    assert r.status_code == 400  # not a field of a serialised card's template
+
+
+def test_managers_field_accepts_managers_only(client, admin, templates):
+    users = _users(client, admin)
+    r = client.post("/templates", json={
+        "type": "setup", "name": "Mgr Setup", "serial_prefix": "MGR",
+        "fields": [{"label": "Managers", "field_type": "managers", "mode": "fixed",
+                    "fixed_value": [users["dana@lattice.io"]["id"]]}],
+    }, headers=admin)
+    assert r.status_code == 400 and "not a manager" in r.json()["detail"]
+
+
+def test_fixed_managers_link_every_item_and_follow_template_edits(client, admin, templates):
+    users = _users(client, admin)
+    tid = templates["PRB"]
+    tpl = client.get(f"/templates/{tid}", headers=admin).json()
+    items = client.get(f"/items?template_id={tid}", headers=admin).json()
+    assert all(i["manager_names"] == ["Noa (Team Lead)"] for i in items)
+
+    fields = [{**f} for f in tpl["fields"]]
+    for f in fields:
+        if f["key"] == "managers":
+            f["fixed_value"] = [users["admin@lattice.io"]["id"]]
+    r = client.patch(f"/templates/{tid}", json={"fields": fields}, headers=admin)
     assert r.status_code == 200, r.text
-    assert r.json()["location_id"] == target
+    items = client.get(f"/items?template_id={tid}", headers=admin).json()
+    assert all(i["manager_names"] == ["System Administrator"] for i in items), \
+        "editing the template moved every item under the new manager"
 
-    after = client.get(f"/items/{a_setup}", headers=admin).json()
-    assert after["location_id"] == target
-    # a container drags its contents (§3) — the plain field write would not have
-    for child in after["children"]:
-        assert child["location_id"] == target, "contents left behind at the old location"
-        nested = client.get(f"/items/{child['id']}", headers=admin).json()["children"]
-        for grandchild in nested:
-            assert grandchild["location_id"] == target, "the cascade stopped one level down"
-
-    # and the move is auditable, not silent
-    actions = [a["action"] for a in client.get(f"/audit?item_id={a_setup}", headers=admin).json()]
-    assert "move" in actions
+    # restore for the other tests
+    for f in fields:
+        if f["key"] == "managers":
+            f["fixed_value"] = [users["noa@lattice.io"]["id"]]
+    assert client.patch(f"/templates/{tid}", json={"fields": fields},
+                        headers=admin).status_code == 200
 
 
-def test_a_linked_item_cannot_be_moved_on_its_own(client, admin, a_setup):
-    """Linked means physically *inside*: the contained item has no location of
-    its own, so the only honest move is the container's — and the refusal has to
-    name the item to move instead."""
-    setup = client.get(f"/items/{a_setup}", headers=admin).json()
-    child = setup["children"][0]
+def test_switching_a_fixed_field_to_per_item_keeps_each_items_value(client, admin):
+    r = client.post("/templates", json={
+        "type": "setup", "name": "Mode Switch", "serial_prefix": "MSW",
+        "fields": [{"label": "Owner", "field_type": "text", "mode": "fixed",
+                    "fixed_value": "Lab"}],
+    }, headers=admin)
+    tpl = r.json()
+    item = _new(client, admin, tpl["id"])
+    assert item["fields"][0]["value"] == "Lab"
 
-    direct = client.post(f"/items/{child['id']}/move", headers=admin, json={"location_id": 5})
-    assert direct.status_code == 400
-    assert setup["name"] in direct.json()["detail"], "the error must say what to move"
+    field = {**tpl["fields"][0], "fixed_value": "Lab 2"}
+    client.patch(f"/templates/{tpl['id']}", json={"fields": [field]}, headers=admin)
+    assert client.get(f"/items/{item['id']}", headers=admin).json()["fields"][0]["value"] \
+        == "Lab 2", "a template value is read through, so editing it changes every item"
 
-    # the edit form's location field is refused the same way, and changes nothing
-    patched = client.patch(f"/items/{child['id']}", headers=admin, json={"location_id": 5})
-    assert patched.status_code == 400
-    still = client.get(f"/items/{child['id']}", headers=admin).json()
-    assert still["location_id"] == setup["location_id"]
-
-    # taking it out of the container makes it independent again
-    client.post(f"/items/{child['id']}/unlink", headers=admin)
-    freed = client.post(f"/items/{child['id']}/move", headers=admin, json={"location_id": 5})
-    assert freed.status_code == 200, freed.text
-
-    client.post(f"/items/{child['id']}/link", headers=admin, json={"parent_id": a_setup})
+    field = {**field, "mode": "item"}
+    client.patch(f"/templates/{tpl['id']}", json={"fields": [field]}, headers=admin)
+    got = client.get(f"/items/{item['id']}", headers=admin).json()["fields"][0]
+    assert got["mode"] == "item" and got["value"] == "Lab 2"
 
 
-def test_container_contents_are_editable_after_creation(client, admin):
-    """Contents could only be chosen while creating a container, so a setup
-    assembled by mistake could never be corrected (§6/§8)."""
-    setup = client.post(
-        "/items", headers=admin,
-        json={"type": "setup", "name": "Contents Edit Setup", "location_id": 4},
-    ).json()
-    a, b = (
-        client.post(
-            "/items", headers=admin,
-            json={
-                "type": "card", "name": f"Contents Card {suffix}",
-                "card_type": "company", "serial": f"CE-{suffix}",
-            },
-        ).json()
-        for suffix in ("A", "B")
-    )
-
-    added = client.put(
-        f"/items/{setup['id']}/children", headers=admin,
-        json={"child_ids": [a["id"], b["id"]]},
-    )
-    assert added.status_code == 200, added.text
-    assert {c["id"] for c in added.json()["children"]} == {a["id"], b["id"]}
-    # adopted items follow the container's location (§9)
-    assert client.get(f"/items/{a['id']}", headers=admin).json()["location_id"] == 4
-
-    # dropping one unlinks it — it is not deleted
-    kept = client.put(
-        f"/items/{setup['id']}/children", headers=admin, json={"child_ids": [b["id"]]}
-    )
-    assert {c["id"] for c in kept.json()["children"]} == {b["id"]}
-    freed = client.get(f"/items/{a['id']}", headers=admin).json()
-    assert freed["parent_id"] is None and freed["storage_status"] == "desiccator"
-
-    # an illegal member is refused *before* anything is written, so the existing
-    # contents survive the failed edit intact
-    other = client.post(
-        "/items", headers=admin, json={"type": "setup", "name": "Contents Other Setup"}
-    ).json()
-    bad = client.put(
-        f"/items/{setup['id']}/children", headers=admin,
-        json={"child_ids": [b["id"], other["id"]]},
-    )
-    assert bad.status_code == 400
-    unchanged = client.get(f"/items/{setup['id']}", headers=admin).json()
-    assert {c["id"] for c in unchanged["children"]} == {b["id"]}
+def test_a_field_type_cannot_change_in_place(client, admin, templates):
+    tpl = client.get(f"/templates/{templates['FTS']}", headers=admin).json()
+    fields = [{**f} for f in tpl["fields"]]
+    fields[-1]["field_type"] = "integer"
+    r = client.patch(f"/templates/{templates['FTS']}", json={"fields": fields}, headers=admin)
+    assert r.status_code == 400 and "cannot change" in r.json()["detail"]
 
 
-def test_edit_form_can_change_state_and_keeps_the_faulty_note_rule(client, admin, a_setup):
-    """`state` was dropped by ItemUpdate just like `location_id` was. Routing it
-    through change_state means it still records history and still demands a note
-    for faulty transitions instead of quietly writing the column."""
-    before = client.get(f"/items/{a_setup}", headers=admin).json()
-    history_before = len(before["state_history"])
-
-    # a plain transition sticks
-    r = client.patch(f"/items/{a_setup}", headers=admin, json={"state": "working"})
-    assert r.status_code == 200, r.text
-    assert r.json()["state"] == "working"
-
-    # going faulty without an explanation is refused — with a 400, not a 500
-    bad = client.patch(f"/items/{a_setup}", headers=admin, json={"state": "faulty"})
-    assert bad.status_code == 400, bad.text
-    assert "note" in bad.json()["detail"].lower()
-    assert client.get(f"/items/{a_setup}", headers=admin).json()["state"] == "working"
-
-    # with the note it goes through and lands in the history
-    ok = client.patch(
-        f"/items/{a_setup}",
-        headers=admin,
-        json={"state": "faulty", "state_note": "capacitor burned out"},
-    )
-    assert ok.status_code == 200, ok.text
-    after = client.get(f"/items/{a_setup}", headers=admin).json()
-    assert after["state"] == "faulty"
-    assert len(after["state_history"]) > history_before
-    assert any("capacitor" in (h["note"] or "") for h in after["state_history"])
+def test_a_template_with_items_cannot_be_deleted(client, admin, templates):
+    r = client.delete(f"/templates/{templates['PRB']}", headers=admin)
+    assert r.status_code == 400
+    empty = client.post("/templates", json={"type": "setup", "name": "Empty",
+                                            "serial_prefix": "EMP"}, headers=admin).json()
+    assert client.delete(f"/templates/{empty['id']}", headers=admin).status_code == 204
 
 
-def test_domain_errors_are_400_on_every_route_not_just_create(client, admin):
-    """PATCH /items had no `except DomainError`, so a rule violation surfaced as
-    a bare 500 with no explanation. A global handler covers every route."""
-    item = client.get("/items?type=assembly", headers=admin).json()[0]
-    r = client.patch(
-        f"/items/{item['id']}", headers=admin, json={"project": "NOT-A-REAL-PROJECT"}
-    )
-    assert r.status_code == 400, f"expected a clean 400, got {r.status_code}"
-    assert "not a known project" in r.json()["detail"]
+def test_editors_propose_template_edits_and_managers_apply_them(
+    client, admin, editor, templates
+):
+    tid = templates["SPM"]
+    assert client.patch(f"/templates/{tid}", json={"description": "x"},
+                        headers=editor).status_code == 403
+    r = client.post("/change-requests", json={
+        "action": "template_update", "template_id": tid,
+        "payload": {"description": "Signal processing, rev B"},
+        "reason": "Clarify what the module is",
+    }, headers=editor)
+    assert r.status_code == 201, r.text
+    cr = r.json()
+    assert cr["template_id"] == tid and cr["description"]
+    assert client.post(f"/change-requests/{cr['id']}/approve", headers=admin).status_code == 200
+    assert client.get(f"/templates/{tid}", headers=admin).json()["description"] == \
+        "Signal processing, rev B"
 
 
-def test_paging_bounds_reject_negatives_instead_of_500(client, admin):
-    """Postgres rejects a negative LIMIT/OFFSET at the driver level, so an
-    unbounded Query() turned `?offset=-1` into an unhandled 500."""
-    for url in ("/items?offset=-1", "/items?limit=-5", "/audit?limit=-5", "/search?q=a&limit=0"):
-        assert client.get(url, headers=admin).status_code == 422, url
+# ─────────────────────────── hierarchy ───────────────────────────
+def test_links_follow_the_templates(client, admin, templates):
+    nic = _new(client, admin, templates["NIC"], quantity=1)
+    spm = _new(client, admin, templates["SPM"])
+    r = client.post(f"/items/{nic['id']}/link", json={"parent_id": spm["id"]}, headers=admin)
+    assert r.status_code == 400 and "don't include" in r.json()["detail"]
+    setup = _new(client, admin, templates["FTS"],
+                 location=_loc(client, admin, "Lab B — Bench 4")["id"])
+    r = client.post(f"/items/{nic['id']}/link", json={"parent_id": setup["id"]}, headers=admin)
+    assert r.status_code == 200
+    assert r.json()["location"]["name"] == "Lab B — Bench 4"
+    assert r.json()["storage_status"] == "assembled"
+
+
+def test_move_cascades_and_linked_items_cannot_move_alone(client, admin, templates):
+    lab_a = _loc(client, admin, "Lab A — Bench 1")["id"]
+    storage = _loc(client, admin, "Storage Room")["id"]
+    spm = _new(client, admin, templates["SPM"], location=lab_a)
+    card = _new(client, admin, templates["FPG"], description="cascade test card")
+    client.put(f"/items/{spm['id']}/children", json={"child_ids": [card["id"]]}, headers=admin)
+    r = client.post(f"/items/{spm['id']}/move", json={"location_id": storage}, headers=admin)
+    assert r.status_code == 200
+    moved = client.get(f"/items/{card['id']}", headers=admin).json()
+    assert moved["location_id"] == storage
+    r = client.post(f"/items/{card['id']}/move", json={"location_id": lab_a}, headers=admin)
+    assert r.status_code == 400 and "sits inside" in r.json()["detail"]
+
+    # unlinking can say where the card now is
+    desiccator = _loc(client, admin, "Desiccator — Team B")["id"]
+    r = client.post(f"/items/{card['id']}/unlink", json={"location_id": desiccator},
+                    headers=admin)
+    assert r.json()["storage_status"] == "desiccator"
+
+
+def test_create_with_parent_and_children(client, admin, templates):
+    setup = _new(client, admin, templates["FTS"],
+                 location=_loc(client, admin, "Lab A — Bench 1")["id"])
+    card = _new(client, admin, templates["FPG"], description="child card one")
+    r = client.post("/items", json={"template_id": templates["SPM"], "values": {},
+                                    "child_ids": [card["id"]]}, headers=admin)
+    spm = r.json()
+    assert [c["id"] for c in spm["children"]] == [card["id"]]
+    r = client.post(f"/items/{spm['id']}/link", json={"parent_id": setup["id"]}, headers=admin)
+    assert r.status_code == 200
+    assert client.get(f"/items/{card['id']}", headers=admin).json()["location"]["name"] == \
+        "Lab A — Bench 1", "linking a container drags its contents along"
+
+
+def test_state_machine_requires_note_for_fault(client, admin, templates):
+    item = _new(client, admin, templates["FTS"],
+                location=_loc(client, admin, "Lab A — Bench 1")["id"])
+    r = client.post(f"/items/{item['id']}/state", json={"state": "faulty"}, headers=admin)
+    assert r.status_code == 400
+    r = client.post(f"/items/{item['id']}/state", json={"state": "faulty", "note": "smoke"},
+                    headers=admin)
+    assert r.status_code == 200
+    history = r.json()["state_history"]
+    assert history[-1]["changed_by_name"] == "System Administrator"
+    assert history[-1]["changed_at"]
+
+
+def test_physical_state_is_not_edited_through_the_edit_form(client, admin, templates):
+    item = _new(client, admin, templates["PRB"])
+    r = client.patch(f"/items/{item['id']}", json={"values": {"location": 1}}, headers=admin)
+    assert r.status_code == 400 and "move" in r.json()["detail"]
+
+
+def test_a_no_op_save_writes_no_audit_entry(client, admin, templates):
+    item = _new(client, admin, templates["SPM"], rev="C")
+    before = len(client.get(f"/audit?item_id={item['id']}", headers=admin).json())
+    client.patch(f"/items/{item['id']}", json={"values": {"rev": "C"}}, headers=admin)
+    assert len(client.get(f"/audit?item_id={item['id']}", headers=admin).json()) == before
+    client.patch(f"/items/{item['id']}", json={"values": {"rev": "D"}}, headers=admin)
+    assert len(client.get(f"/audit?item_id={item['id']}", headers=admin).json()) == before + 1
+
+
+def test_bulk_move_is_atomic(client, admin, templates):
+    loose = _new(client, admin, templates["SPM"])
+    linked = client.get("/items?type=card", headers=admin).json()
+    linked = next(i for i in linked if i["parent_id"])
+    storage = _loc(client, admin, "Storage Room")["id"]
+    r = client.post("/items/bulk", json={"action": "move", "item_ids": [loose["id"],
+                                         linked["id"]], "location_id": storage}, headers=admin)
+    assert r.status_code == 400
+    assert client.get(f"/items/{loose['id']}", headers=admin).json()["location_id"] != storage
+
+
+# ─────────────────────────── change requests ───────────────────────────
+def test_viewer_may_propose_a_location_change_only(client, viewer, admin, templates):
+    item = _new(client, admin, templates["SPM"])
+    storage = _loc(client, admin, "Storage Room")["id"]
+    r = client.post("/change-requests", json={
+        "action": "move", "item_id": item["id"], "payload": {"location_id": storage},
+        "reason": "It was carried to storage",
+    }, headers=viewer)
+    assert r.status_code == 201, r.text
+    cr = r.json()
+    assert "Storage Room" in cr["description"], "the 'what' is generated, only 'why' is asked"
+    r = client.post("/change-requests", json={
+        "action": "state_change", "item_id": item["id"], "payload": {"state": "ok"},
+        "reason": "x",
+    }, headers=viewer)
+    assert r.status_code == 403
+    assert client.post(f"/change-requests/{cr['id']}/approve",
+                       headers=viewer).status_code == 403
+    assert client.post(f"/change-requests/{cr['id']}/approve", headers=admin).status_code == 200
+    assert client.get(f"/items/{item['id']}", headers=admin).json()["location_id"] == storage
+
+
+def test_editor_proposes_an_item_and_approval_creates_it(client, editor, admin, templates):
+    before = len(client.get(f"/items?template_id={templates['SPM']}", headers=admin).json())
+    r = client.post("/change-requests", json={
+        "action": "create", "payload": {"template_id": templates["SPM"],
+                                        "values": {"rev": "E"}},
+        "reason": "Building a second module",
+    }, headers=editor)
+    assert r.status_code == 201, r.text
+    assert r.json()["item_name"] == "Signal Processing Module"
+    assert client.post(f"/change-requests/{r.json()['id']}/approve",
+                       headers=admin).status_code == 200
+    after = len(client.get(f"/items?template_id={templates['SPM']}", headers=admin).json())
+    assert after == before + 1
 
 
 def test_malformed_proposal_is_rejected_not_a_500(client, editor, admin, a_setup):
-    """`payload` is a free-form blob chosen by the proposer, so approval has to
-    survive it being nonsense — with a readable 400, not an unhandled 500."""
-    for action, payload in (("create", {}), ("move", {}), ("state_change", {})):
-        cr = client.post(
-            "/change-requests",
-            headers=editor,
-            json={
-                "action": action,
-                "item_id": a_setup,
-                "payload": payload,
-                "description": "malformed",
-                "reason": "testing",
-            },
-        ).json()
-        r = client.post(f"/change-requests/{cr['id']}/approve", headers=admin)
-        assert r.status_code == 400, f"{action}: got {r.status_code}"
-        assert "not valid" in r.json()["detail"]
-        # the proposal must survive so a manager can still reject it
-        still = client.get(f"/change-requests/{cr['id']}", headers=admin).json()
-        assert still["status"] == "pending"
+    r = client.post("/change-requests", json={
+        "action": "state_change", "item_id": a_setup, "payload": {"state": "bogus"},
+        "reason": "x",
+    }, headers=editor)
+    r = client.post(f"/change-requests/{r.json()['id']}/approve", headers=admin)
+    assert r.status_code == 400 and "not valid" in r.json()["detail"]
 
 
-def test_desiccator_endpoint_only_returns_desiccator_stock(client, admin):
-    """The filter was `desiccator > 0 or total > 0`; a group only exists when it
-    has a card, so `total > 0` always held and this mirrored /inventory/cards —
-    leaving the UI's All/Desiccator toggle with nothing to do."""
-    # a card that is in use and therefore holds nothing in the desiccator
-    client.post(
-        "/items",
-        headers=admin,
-        json={
-            "type": "card",
-            "name": "Bench-Only Card",
-            "card_type": "company",
-            "serial": "BENCH-001",
-            "storage_status": "in_use",
-        },
-    )
-    everything = client.get("/inventory/cards", headers=admin).json()
-    only_desiccator = client.get("/inventory/desiccator", headers=admin).json()
-
-    names = {g["name"] for g in everything}
-    desiccator_names = {g["name"] for g in only_desiccator}
-    assert "Bench-Only Card" in names
-    assert "Bench-Only Card" not in desiccator_names
-    assert all(g["desiccator"] > 0 for g in only_desiccator)
+def test_pending_fixture_request_lists(client, admin):
+    pending = client.get("/change-requests?status=pending", headers=admin).json()
+    assert any(cr["reason"] == "It passed the bench test." for cr in pending)
 
 
-def test_password_over_the_bcrypt_byte_limit_is_a_clean_422(client, admin):
-    """bcrypt raises above 72 *bytes*; unguarded that was a 500. Hebrew is two
-    bytes a character, so this is reachable well under 72 characters."""
-    for password in ("x" * 100, "סיסמה" * 10):
-        r = client.post(
-            "/users",
-            headers=admin,
-            json={
-                "email": f"long{len(password)}@lattice.io",
-                "full_name": "Long",
-                "password": password,
-                "role": "viewer",
-            },
-        )
-        assert r.status_code == 422, f"{len(password.encode())} bytes -> {r.status_code}"
+# ─────────────────────────── catalog ───────────────────────────
+def test_team_is_a_catalog_category(client, admin):
+    teams = client.get("/catalog?category=team", headers=admin).json()
+    assert {t["value"] for t in teams} >= {"HW-Team-A", "Integration"}
+    hw = next(t for t in teams if t["value"] == "HW-Team-A")
+    assert hw["usage_count"] >= 1, "assemblies made from SPM carry the team"
 
 
-def test_search_treats_like_wildcards_literally(client, admin):
-    """`%` is a LIKE wildcard: unescaped it matched every row in the database."""
-    assert client.get("/search?q=%25", headers=admin).json()["total"] == 0
-    assert client.get("/items?search=%25", headers=admin).json() == []
-
-
-def test_deleting_a_user_with_proposals_is_refused_not_crashed(client, admin, editor):
-    """change_requests.proposed_by is a non-nullable FK with no ON DELETE rule,
-    so removing a proposer raised an IntegrityError and surfaced as a 500."""
-    everyone = client.get("/users", headers=admin).json()
-    dana = next(u for u in everyone if u["email"] == "dana@lattice.io")
-    r = client.delete(f"/users/{dana['id']}", headers=admin)
-    assert r.status_code == 409, r.status_code
-    assert "deactivate" in r.json()["detail"].lower()
-    # and the account is still there, intact
-    assert any(u["id"] == dana["id"] for u in client.get("/users", headers=admin).json())
-
-
-def test_a_no_op_save_writes_no_audit_entry(client, admin, a_setup):
-    """The edit form always posts `manager_ids`, and update_item assigned it
-    unconditionally — so re-saving an unchanged item logged a bogus
-    "(manager_ids)" change every time, with `None` as the old value."""
-    before = client.get(f"/items/{a_setup}", headers=admin).json()
-    count_before = len(client.get(f"/audit?item_id={a_setup}", headers=admin).json())
-
-    payload = {
-        "name": before["name"],
-        "manager_ids": [m["id"] for m in before["managers"]],
-    }
-    for _ in range(3):
-        assert client.patch(f"/items/{a_setup}", headers=admin, json=payload).status_code == 200
-
-    after = client.get(f"/audit?item_id={a_setup}", headers=admin).json()
-    assert len(after) == count_before, "a save that changes nothing must not be logged"
-
-    # a real change is still recorded, and with the true previous value
-    managers = client.get("/users/managers", headers=admin).json()
-    changed = client.patch(
-        f"/items/{a_setup}", headers=admin, json={"manager_ids": [managers[0]["id"]]}
-    )
-    assert changed.status_code == 200
-    entries = client.get(f"/audit?item_id={a_setup}", headers=admin).json()
-    assert len(entries) == count_before + 1
-    old, new = entries[0]["details"]["changed"]["manager_ids"]
-    assert old == payload["manager_ids"] and new == [managers[0]["id"]]
-
-
-def test_link_rules_enforced(client, admin):
-    # a setup cannot become a child of anything
-    setups = client.get("/items?type=setup", headers=admin).json()
-    cards = client.get("/items?type=card", headers=admin).json()
-    r = client.post(
-        f"/items/{setups[0]['id']}/link",
-        headers=admin,
-        json={"parent_id": cards[0]["id"]},
-    )
+def test_catalog_links_are_two_way_and_cross_category(client, admin):
+    opts = {o["value"]: o for o in client.get("/catalog", headers=admin).json()}
+    team, space, defense = opts["Integration"], opts["Space"], opts["Defense"]
+    r = client.put(f"/catalog/{team['id']}/links",
+                   json={"category": "industry", "option_ids": [space["id"], defense["id"]]},
+                   headers=admin)
+    assert r.status_code == 200
+    assert set(r.json()["linked_ids"]) >= {space["id"], defense["id"]}
+    # seen from the industry's side, without touching it
+    space_now = next(o for o in client.get("/catalog", headers=admin).json()
+                     if o["id"] == space["id"])
+    assert team["id"] in space_now["linked_ids"]
+    # editing one category leaves the others alone
+    assert opts["Falcon"]["id"] in r.json()["linked_ids"]
+    # removing from the other end
+    client.put(f"/catalog/{space['id']}/links", json={"category": "team", "option_ids": []},
+               headers=admin)
+    team_now = next(o for o in client.get("/catalog", headers=admin).json()
+                    if o["id"] == team["id"])
+    assert space["id"] not in team_now["linked_ids"]
+    r = client.put(f"/catalog/{team['id']}/links", json={"category": "team",
+                   "option_ids": []}, headers=admin)
     assert r.status_code == 400
 
 
-def test_change_request_flow(client, editor, admin, a_setup):
-    cr = client.post(
-        "/change-requests",
-        headers=editor,
-        json={
-            "action": "update",
-            "item_id": a_setup,
-            "payload": {"description": "Updated via change request"},
-            "description": "Tweak description",
-            "reason": "Testing the workflow",
-        },
-    )
-    assert cr.status_code == 201, cr.text
-    cr_id = cr.json()["id"]
-    assert cr.json()["status"] == "pending"
-
-    # editor cannot approve
-    assert client.post(f"/change-requests/{cr_id}/approve", headers=editor).status_code == 403
-
-    ap = client.post(f"/change-requests/{cr_id}/approve", headers=admin, json={"note": "ok"})
-    assert ap.status_code == 200
-    assert ap.json()["status"] == "approved"
-
-    updated = client.get(f"/items/{a_setup}", headers=admin).json()
-    assert updated["description"] == "Updated via change request"
-
-
-def test_graph_shape(client, admin):
-    g = client.get("/graph", headers=admin).json()
-    assert len(g["nodes"]) > len(g["edges"]) >= 1
-
-
-def test_audit_records_history(client, admin, a_setup):
-    audit = client.get(f"/audit?item_id={a_setup}", headers=admin).json()
-    actions = {a["action"] for a in audit}
-    assert {"create", "move", "state_change"} & actions
-
-
-def test_export_import_roundtrip(client, admin):
-    exp = client.get("/data/export?type=card", headers=admin)
-    assert exp.status_code == 200
-    assert exp.headers["content-type"].startswith("application/vnd.openxml")
-    assert len(exp.content) > 500
-
-    template = client.get("/data/template", headers=admin)
-    assert template.status_code == 200
-
-
-def test_manager_only_user_management(client, editor):
-    assert client.get("/users", headers=editor).status_code == 200  # viewer+ can read
-    r = client.post(
-        "/users",
-        headers=editor,
-        json={"email": "x@lattice.io", "full_name": "X", "password": "secret1", "role": "viewer"},
-    )
-    assert r.status_code == 403  # editors cannot create users
-
-
-# ─────────────────────── §2 admin-managed catalogs ───────────────────────
-def test_catalog_values_are_enforced(client, admin):
-    projects = client.get("/catalog?category=project", headers=admin).json()
-    values = {p["value"] for p in projects}
-    assert {"Falcon", "Sparrow", "Horizon"} <= values
-
-    # creating an item with an unknown project is rejected
-    bad = client.post(
-        "/items",
-        headers=admin,
-        json={"type": "setup", "name": "Bad Proj Setup", "project": "TotallyUnknownProj"},
-    )
-    assert bad.status_code == 400
-    assert "not a known project" in bad.json()["detail"]
-
-    # a known project works
-    ok = client.post(
-        "/items",
-        headers=admin,
-        json={"type": "setup", "name": "Good Proj Setup", "project": "Falcon"},
-    )
-    assert ok.status_code == 201, ok.text
-
-
-def test_catalog_crud_and_usage_guard(client, admin, editor):
-    # editor cannot manage the catalog
-    assert client.post(
-        "/catalog", headers=editor, json={"category": "project", "value": "Nope"}
-    ).status_code == 403
-
-    created = client.post(
-        "/catalog", headers=admin, json={"category": "project", "value": "Meteor"}
-    )
-    assert created.status_code == 201, created.text
-    opt_id = created.json()["id"]
-
-    # can't duplicate
-    assert client.post(
-        "/catalog", headers=admin, json={"category": "project", "value": "Meteor"}
-    ).status_code == 400
-
-    # unused option can be deleted
-    assert client.delete(f"/catalog/{opt_id}", headers=admin).status_code == 204
-
-    # an in-use option cannot be deleted
-    falcon = next(
-        o for o in client.get("/catalog?category=project", headers=admin).json()
-        if o["value"] == "Falcon"
-    )
-    assert falcon["usage_count"] >= 1
-    assert client.delete(f"/catalog/{falcon['id']}", headers=admin).status_code == 400
-
-
-# ─────────────────── §6/§8 bidirectional linking + setup-direct cards ───────────────────
-def test_create_with_children_cascades_location(client, admin):
-    # a standalone card and assembly to be adopted
-    card = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Adopt Card",
-            "card_type": "company", "serial": "ADOPT-001",
-        },
-    ).json()
-    asm = client.post(
-        "/items", headers=admin, json={"type": "assembly", "name": "Adopt Assembly"},
-    ).json()
-
-    # a setup that adopts BOTH an assembly and a card directly (§8), at location 3
-    setup = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "setup", "name": "Adopting Setup", "location_id": 3,
-            "child_ids": [card["id"], asm["id"]],
-        },
-    )
-    assert setup.status_code == 201, setup.text
-    sid = setup.json()["id"]
-
-    child_ids = {c["id"] for c in client.get(f"/items/{sid}", headers=admin).json()["children"]}
-    assert {card["id"], asm["id"]} <= child_ids
-
-    # both children inherited the setup's location (§9 cascade on link)
-    assert client.get(f"/items/{card['id']}", headers=admin).json()["location_id"] == 3
-    assert client.get(f"/items/{asm['id']}", headers=admin).json()["location_id"] == 3
-
-
-def test_nested_link_cascades_whole_subtree(client, admin):
-    # card inside assembly; then assembly moved into a setup at a new location
-    card = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Deep Card",
-            "card_type": "company", "serial": "DEEP-001",
-        },
-    ).json()
-    asm = client.post(
-        "/items", headers=admin, json={"type": "assembly", "name": "Deep Assembly"},
-    ).json()
-    client.post(f"/items/{card['id']}/link", headers=admin, json={"parent_id": asm["id"]})
-
-    setup = client.post(
-        "/items", headers=admin,
-        json={"type": "setup", "name": "Deep Setup", "location_id": 4},
-    ).json()
-    client.post(f"/items/{asm['id']}/link", headers=admin, json={"parent_id": setup["id"]})
-
-    # the nested card followed all the way down to the setup's location
-    assert client.get(f"/items/{card['id']}", headers=admin).json()["location_id"] == 4
-
-
-# ─────────────────────── §2/§12 unique-serial integrity ───────────────────────
-def test_unique_card_serial_must_be_unique(client, admin):
-    first = client.post(
-        "/items", headers=admin,
-        json={"type": "card", "name": "FPGA", "card_type": "unique", "serial": "SN-UNIQ-1"},
-    )
-    assert first.status_code == 201, first.text
-    dup = client.post(
-        "/items", headers=admin,
-        json={"type": "card", "name": "FPGA", "card_type": "unique", "serial": "SN-UNIQ-1"},
-    )
-    assert dup.status_code == 400
-    assert "already used" in dup.json()["detail"]
-
-
-# ─────────────────────── §5 templates ───────────────────────
-def test_templates_separated_from_live_items(client, admin):
-    live = client.get("/items", headers=admin).json()
-    assert all(not i["is_template"] for i in live)
-
-    templates = client.get("/items?templates=true", headers=admin).json()
-    assert len(templates) >= 2
-    assert all(t["is_template"] for t in templates)
-
-    # templates are absent from the hierarchy graph
-    node_ids = {n["id"] for n in client.get("/graph", headers=admin).json()["nodes"]}
-    assert not ({t["id"] for t in templates} & node_ids)
-
-
-# ─────────────────────── §5 bulk operations ───────────────────────
-def test_bulk_move_is_atomic(client, admin):
-    ids = [
-        client.post(
-            "/items", headers=admin,
-            json={
-                "type": "card", "name": f"Bulk Card {n}",
-                "card_type": "company", "serial": f"BULK-{n:03d}",
-            },
-        ).json()["id"]
-        for n in range(3)
-    ]
-    r = client.post(
-        "/items/bulk",
-        headers=admin,
-        json={"action": "move", "item_ids": ids, "location_id": 5},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["processed"] == 3
-    for iid in ids:
-        assert client.get(f"/items/{iid}", headers=admin).json()["location_id"] == 5
-
-
-def test_bulk_rejects_missing_state(client, admin):
-    card = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Bulk State Card",
-            "card_type": "company", "serial": "BULK-STATE-001",
-        },
-    ).json()
-    r = client.post(
-        "/items/bulk",
-        headers=admin,
-        json={"action": "state_change", "item_ids": [card["id"]]},
-    )
-    assert r.status_code == 400
-
-
-# ─────────────────────── §7 global search ───────────────────────
-def test_global_search_ranks_and_scopes(client, admin, viewer):
-    res = client.get("/search?q=Power", headers=admin).json()
-    assert res["total"] >= 1
-    assert any(h["kind"] == "item" for h in res["items"])
-
-    # managers can find users; viewers cannot
-    mgr_users = client.get("/search?q=Noa", headers=admin).json()["users"]
-    assert any(u["title"].startswith("Noa") for u in mgr_users)
-    assert client.get("/search?q=Noa", headers=viewer).json()["users"] == []
-
-
-# ─────────────────────── editable map background ───────────────────────
-def test_map_buildings_crud_and_permissions(client, admin, editor, viewer):
-    # the floor plan is readable by everyone
-    plan = client.get("/map/buildings", headers=viewer).json()
-    assert len(plan) >= 6
-    assert {"Lab A", "Assembly Hall"} <= {b["name"] for b in plan}
-
-    # viewers cannot edit the map
-    assert client.post("/map/buildings", headers=viewer, json={"name": "X"}).status_code == 403
-
-    # editors can add and reshape a building
-    created = client.post(
-        "/map/buildings",
-        headers=editor,
-        json={"name": "New Wing", "x": 10, "y": 10, "width": 20, "height": 15, "color": "#ff0000"},
-    )
-    assert created.status_code == 201, created.text
-    bid = created.json()["id"]
-
-    moved = client.patch(f"/map/buildings/{bid}", headers=editor, json={"x": 35, "width": 26})
-    assert moved.status_code == 200
-    assert moved.json()["x"] == 35 and moved.json()["width"] == 26
-
-    # only managers may delete
-    assert client.delete(f"/map/buildings/{bid}", headers=editor).status_code == 403
-    assert client.delete(f"/map/buildings/{bid}", headers=admin).status_code == 204
-
-
-# ─────────────── §12 a commercial card is a quantity, not N rows ───────────────
-def test_commercial_card_carries_its_quantity_on_one_row(client, admin):
-    created = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "COTS RS-422 Adapter", "card_type": "commercial",
-            "quantity": 25, "storage_status": "desiccator",
-        },
-    )
-    assert created.status_code == 201, created.text
-    assert created.json()["quantity"] == 25
-
-    group = next(
-        g for g in client.get("/inventory/cards", headers=admin).json()
-        if g["name"] == "COTS RS-422 Adapter"
-    )
-    # 25 units held on a single record — and the group says exactly that, which
-    # is the point: the number is explainable without counting rows by hand.
-    assert (group["total"], group["records"], group["desiccator"]) == (25, 1, 25)
-    assert group["tracking"] == "quantity"
-
-
-def test_a_model_is_split_by_version_and_the_parts_sum_to_the_whole(client, admin):
-    """One card *name* is many inventory rows — one per version/production batch.
-    So 5 boards under one name read as 3 + 2, and no single row ever says 5;
-    the parts adding up to the whole is the contract the UI's per-model subtotal
-    relies on. Reading a part as if it were the total is exactly the confusion
-    this endpoint has to make impossible."""
-    for version, count in (("1.0", 3), ("2.0", 2)):
-        for i in range(count):
-            r = client.post(
-                "/items", headers=admin,
-                json={
-                    "type": "card", "name": "Sum Check Board", "card_type": "company",
-                    "version": version, "serial": f"SUM-{version}-{i}",
-                },
-            )
-            assert r.status_code == 201, r.text
-
-    rows = client.get("/items?type=card&search=Sum Check Board", headers=admin).json()
-    groups = [
-        g for g in client.get("/inventory/cards", headers=admin).json()
-        if g["name"] == "Sum Check Board"
-    ]
-    assert sorted(g["total"] for g in groups) == [2, 3]
-    assert sum(g["total"] for g in groups) == len(rows) == 5
-
-
-def test_the_dashboard_tile_cannot_drift_from_the_inventory_table(client, admin):
-    """The tile summed `Item.quantity` directly while the table skipped cards
-    with no card_type, so a legacy row made the two disagree — the dashboard
-    quietly contradicting the page it summarises. Both come from one
-    computation now, so no row can be counted by one and not the other."""
-    from lattice_core.database import SessionLocal
-    from lattice_core.models import Item, ItemType
-
-    with SessionLocal() as db:  # a row from before card_type was mandatory
-        db.add(Item(type=ItemType.card, name="Legacy Untyped Card", card_type=None, quantity=7))
-        db.commit()
-
-    s = client.get("/inventory/summary", headers=admin).json()
-    groups = client.get("/inventory/cards", headers=admin).json()
-    assert s["cards"] == sum(g["total"] for g in groups)
-    assert s["cards_desiccator"] == sum(g["desiccator"] for g in groups)
-    assert s["cards_in_use"] == sum(g["in_use"] for g in groups)
-
-
-def test_commercial_cards_are_no_longer_missing_from_inventory(client, admin):
-    """They were filtered out of every group, so their stock was simply absent."""
-    names = {g["name"] for g in client.get("/inventory/cards", headers=admin).json()}
-    assert "COTS Ethernet NIC" in names
-
-
-def test_summary_counts_units_not_rows(client, admin):
-    before = client.get("/inventory/summary", headers=admin).json()["cards"]
-    client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "COTS Resistor Pack", "card_type": "commercial",
-            "quantity": 50, "storage_status": "desiccator",
-        },
-    )
-    after = client.get("/inventory/summary", headers=admin).json()["cards"]
-    assert after == before + 50, "one row, fifty physical cards"
-
-
-def test_a_commercial_card_cannot_carry_a_serial(client, admin):
-    r = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "COTS With Serial",
-            "card_type": "commercial", "serial": "COTS-1",
-        },
-    )
-    assert r.status_code == 400
-    assert "quantity" in r.json()["detail"]
-
-
-def test_a_serialised_card_needs_a_serial_and_refuses_a_quantity(client, admin):
-    missing = client.post(
-        "/items", headers=admin,
-        json={"type": "card", "name": "Serial-less Board", "card_type": "unique"},
-    )
-    assert missing.status_code == 400
-    assert "must have a serial" in missing.json()["detail"]
-
-    batched = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Batched Board", "card_type": "company",
-            "serial": "BATCH-1", "quantity": 10,
-        },
-    )
-    assert batched.status_code == 400
-    assert "per unit" in batched.json()["detail"]
-
-
-def test_a_card_without_a_card_type_is_refused(client, admin):
-    """Without one there is no answer to "is this counted by quantity or serial?"."""
-    r = client.post("/items", headers=admin, json={"type": "card", "name": "Untyped Card"})
-    assert r.status_code == 400
-    assert "card type" in r.json()["detail"]
-
-
-def test_switching_a_card_to_commercial_clears_its_stranded_serial(client, admin):
-    card = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Reclassified Board",
-            "card_type": "company", "serial": "RECLASS-1",
-        },
-    ).json()
-    # A PATCH cannot clear a field by sending null, so the type switch has to.
-    r = client.patch(
-        f"/items/{card['id']}", headers=admin,
-        json={"card_type": "commercial", "quantity": 7},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["serial"] is None and r.json()["quantity"] == 7
-    # ...and the serial's disappearance is on the record, not silent (§10)
-    entries = client.get(f"/audit?item_id={card['id']}", headers=admin).json()
-    assert any("serial" in (e["details"].get("changed") or {}) for e in entries)
-
-
-def test_a_serial_is_unique_across_every_card_type(client, admin):
-    first = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Serial Guard A",
-            "card_type": "company", "serial": "GUARD-1",
-        },
-    )
-    assert first.status_code == 201, first.text
-    dup = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Serial Guard B",
-            "card_type": "unique", "serial": "GUARD-1",
-        },
-    )
-    assert dup.status_code == 400
-    assert "already used" in dup.json()["detail"]
-
-
-# ─────────────────────── unique names ───────────────────────
-def test_two_items_cannot_share_a_name(client, admin):
-    assert client.post(
-        "/items", headers=admin, json={"type": "assembly", "name": "Unique Name Module"}
-    ).status_code == 201
-
-    # same name, and the same name modulo case and padding, across types
-    for name in ("Unique Name Module", "  unique name module  "):
-        dup = client.post("/items", headers=admin, json={"type": "setup", "name": name})
-        assert dup.status_code == 400, name
-        assert "already used" in dup.json()["detail"]
-
-    # renaming an existing item onto a taken name is refused just the same
-    other = client.post(
-        "/items", headers=admin, json={"type": "assembly", "name": "Some Other Module"}
-    ).json()
-    assert client.patch(
-        f"/items/{other['id']}", headers=admin, json={"name": "Unique Name Module"}
-    ).status_code == 400
-
-
-def test_serialised_cards_may_share_a_name_but_quantity_cards_may_not(client, admin):
-    """A batch is many rows of one model; the serial is what tells them apart."""
-    for i in range(2):
-        r = client.post(
-            "/items", headers=admin,
-            json={
-                "type": "card", "name": "Batch Board", "card_type": "company",
-                "serial": f"BATCH-BOARD-{i}",
-            },
-        )
-        assert r.status_code == 201, r.text
-
-    # a quantity-tracked card, by contrast, is one row per real thing
-    assert client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Single COTS Board",
-            "card_type": "commercial", "quantity": 3,
-        },
-    ).status_code == 201
-    dup = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "single cots board",
-            "card_type": "commercial", "quantity": 1,
-        },
-    )
-    assert dup.status_code == 400
-
-
-def test_duplicate_location_names_are_refused(client, admin):
-    assert client.post(
-        "/locations", headers=admin, json={"name": "Overflow Shelf"}
-    ).status_code == 201
-    dup = client.post("/locations", headers=admin, json={"name": " overflow shelf "})
-    assert dup.status_code == 400
-    assert "already exists" in dup.json()["detail"]
-
-
-# ─────────────────── §12 thresholds point at real cards ───────────────────
-def test_a_threshold_must_point_at_a_card_that_exists(client, admin, a_setup):
-    """The name used to be free text, so a typo produced a threshold watching a
-    model nobody stocks — permanently 'low', and unlinkable to anything."""
-    ghost = client.post(
-        "/inventory/thresholds", headers=admin, json={"item_id": 999999, "min_quantity": 1}
-    )
-    assert ghost.status_code == 400
-    assert "existing card" in ghost.json()["detail"]
-
-    # and it has to be a *card*, not any old item
-    not_a_card = client.post(
-        "/inventory/thresholds", headers=admin, json={"item_id": a_setup, "min_quantity": 1}
-    )
-    assert not_a_card.status_code == 400
-
-
-def test_a_threshold_takes_its_group_from_the_chosen_card(client, admin):
-    card = client.post(
-        "/items", headers=admin,
-        json={
-            "type": "card", "name": "Threshold Target NIC",
-            "card_type": "commercial", "quantity": 2, "version": "3.1",
-        },
-    ).json()
-
-    t = client.post(
-        "/inventory/thresholds", headers=admin,
-        json={"item_id": card["id"], "min_quantity": 5},
-    )
-    assert t.status_code == 201, t.text
-    created = t.json()
-    assert created["item_id"] == card["id"]
-    assert (created["card_type"], created["name"], created["version"]) == (
-        "commercial", "Threshold Target NIC", "3.1",
-    )
-    assert created["current_quantity"] == 2 and created["is_low"] is True
-
-    # a second threshold on the same group would just double every alert
-    dup = client.post(
-        "/inventory/thresholds", headers=admin,
-        json={"item_id": card["id"], "min_quantity": 3},
-    )
-    assert dup.status_code == 400
-    assert "already watches" in dup.json()["detail"]
-
-    # ...but the same model across *all* versions is a different watch
-    wide = client.post(
-        "/inventory/thresholds", headers=admin,
-        json={"item_id": card["id"], "min_quantity": 5, "any_version": True},
-    )
-    assert wide.status_code == 201, wide.text
-    assert wide.json()["version"] is None
-
-
-# ─────────────────── §8 sign-in shortcuts (login page) ───────────────────
-def _user_id(client, admin, email: str) -> int:
-    return next(u["id"] for u in client.get("/users", headers=admin).json() if u["email"] == email)
-
-
-def test_login_hints_expose_only_what_a_manager_published(client, admin):
-    """The endpoint is unauthenticated by necessity — it feeds the login page —
-    so what it returns is exactly what a manager chose to publish, no more."""
-    public = client.get("/auth/login-hints")  # deliberately no token
-    assert public.status_code == 200
-    hints = {h["email"]: h for h in public.json()}
-    assert "dana@lattice.io" in hints, "the fixture publishes these accounts"
-    assert hints["dana@lattice.io"]["password"] == "password"
-    assert set(hints["dana@lattice.io"]) == {"full_name", "email", "role", "password"}
-
-    dana_id = _user_id(client, admin, "dana@lattice.io")
-
-    # hidden → gone from the login page entirely
-    hidden = client.patch(f"/users/{dana_id}", headers=admin, json={"login_hint_visible": False})
-    assert hidden.status_code == 200
-    assert hidden.json()["login_hint_visible"] is False
-    assert "dana@lattice.io" not in {h["email"] for h in client.get("/auth/login-hints").json()}
-
-    # visible again but with the password withdrawn ("" clears it): the shortcut
-    # fills the email and the password still has to be typed
-    shown = client.patch(
-        f"/users/{dana_id}",
-        headers=admin,
-        json={"login_hint_visible": True, "login_hint_password": ""},
-    )
-    assert shown.json()["has_login_hint_password"] is False
-    published = client.get("/auth/login-hints").json()
-    assert next(h for h in published if h["email"] == "dana@lattice.io")["password"] is None
-
-    # ...and signing in with that account still works, so hiding the hint never
-    # touches the credentials themselves
-    assert client.post(
-        "/auth/login", data={"username": "dana@lattice.io", "password": "password"}
-    ).status_code == 200
-
-    # restore the demo state for the rest of the suite
-    client.patch(
-        f"/users/{dana_id}",
-        headers=admin,
-        json={"login_hint_visible": True, "login_hint_password": "password"},
-    )
-
-
-def test_a_deactivated_account_drops_off_the_login_page(client, admin):
-    created = client.post(
-        "/users", headers=admin,
-        json={
-            "email": "kiosk@lattice.io", "full_name": "Kiosk Demo",
-            "password": "kiosk1234", "role": "viewer",
-        },
-    ).json()
-    assert created["login_hint_visible"] is False, "new accounts are never published"
-
-    client.patch(
-        f"/users/{created['id']}", headers=admin,
-        json={"login_hint_visible": True, "login_hint_password": "kiosk1234"},
-    )
-    assert "kiosk@lattice.io" in {h["email"] for h in client.get("/auth/login-hints").json()}
-
-    client.patch(f"/users/{created['id']}", headers=admin, json={"is_active": False})
-    assert "kiosk@lattice.io" not in {h["email"] for h in client.get("/auth/login-hints").json()}
-
-
-def test_only_managers_may_publish_a_sign_in_shortcut(client, editor, admin):
-    amir_id = _user_id(client, admin, "amir@lattice.io")
-    r = client.patch(f"/users/{amir_id}", headers=editor, json={"login_hint_visible": False})
+def test_catalog_values_in_use_are_protected_and_renames_follow(client, admin, templates):
+    opts = {o["value"]: o for o in client.get("/catalog", headers=admin).json()}
+    assert client.delete(f"/catalog/{opts['Falcon']['id']}", headers=admin).status_code == 400
+    r = client.patch(f"/catalog/{opts['HW-Team-A']['id']}", json={"value": "HW Team A"},
+                     headers=admin)
+    assert r.status_code == 200
+    spm = client.get(f"/items?template_id={templates['SPM']}", headers=admin).json()[0]
+    assert spm["team"] == "HW Team A", "items hold the id, so a rename reaches them"
+    client.patch(f"/catalog/{opts['HW-Team-A']['id']}", json={"value": "HW-Team-A"},
+                 headers=admin)
+
+
+def test_catalog_management_is_manager_only(client, editor):
+    r = client.post("/catalog", json={"category": "team", "value": "X"}, headers=editor)
     assert r.status_code == 403
 
 
-def test_publishing_a_shortcut_is_audited(client, admin):
-    amir_id = _user_id(client, admin, "amir@lattice.io")
-    client.patch(f"/users/{amir_id}", headers=admin, json={"login_hint_visible": False})
-    entry = next(
-        a for a in client.get("/audit", headers=admin).json() if a["action"] == "user.update"
-    )
-    assert entry["details"]["login_hint_visible"] is False
-    client.patch(f"/users/{amir_id}", headers=admin, json={"login_hint_visible": True})
+# ─────────────────────────── desiccator & inventory ───────────────────────────
+def test_the_desiccator_is_a_set_of_locations(client, admin, editor):
+    locs = {loc["name"]: loc for loc in client.get("/locations", headers=admin).json()}
+    assert {n for n, loc in locs.items() if loc["is_desiccator"]} == {
+        "Desiccator — Team A", "Desiccator — Team B"}
+    r = client.put("/locations/desiccator", json={"location_ids": [
+        locs["Desiccator — Team A"]["id"], locs["Desiccator — Team B"]["id"],
+        locs["Storage Room"]["id"]]}, headers=editor)
+    assert r.status_code == 403
+    r = client.patch(f"/locations/{locs['Storage Room']['id']}",
+                     json={"is_desiccator": True}, headers=editor)
+    assert r.status_code == 403
 
 
-# ─────────────────── §12 low-stock alerts list their components ───────────────────
-def test_low_stock_alert_carries_the_component_list(client, admin, monkeypatch):
-    """It used to be one prose sentence per threshold, so a manager watching
-    several groups got several emails and had to read them to learn what was
-    short. One digest per recipient now, with the components as data."""
-    import asyncio
+def test_available_stock_is_built_or_ok_loose_in_the_desiccator(client, admin, templates):
+    def group():
+        return next(g for g in client.get("/inventory/cards", headers=admin).json()
+                    if g["template_id"] == tid)
 
-    from lattice_core import events as events_mod
-    from lattice_core.database import SessionLocal
-    from lattice_core.services import inventory as inv
+    r = client.post("/templates", json={"type": "card", "name": "Stock Probe",
+                                        "card_type": "factory", "serial_prefix": "STK"},
+                    headers=admin)
+    tid = r.json()["id"]
+    a = _new(client, admin, tid)
+    b = _new(client, admin, tid)
+    g = group()
+    assert (g["available"], g["desiccator"], g["total"]) == (2, 2, 2)
 
+    client.post(f"/items/{a['id']}/state", json={"state": "faulty", "note": "dead"},
+                headers=admin)
+    g = group()
+    assert g["available"] == 1 and g["desiccator"] == 2 and g["faulty"] == 1
+
+    storage = _loc(client, admin, "Storage Room")["id"]
+    client.post(f"/items/{b['id']}/move", json={"location_id": storage}, headers=admin)
+    g = group()
+    assert g["available"] == 0 and g["in_use"] == 1, "outside the desiccator = in use"
+
+    # making the storage room part of the desiccator brings it back
+    desiccator_ids = [loc["id"] for loc in client.get("/locations", headers=admin).json()
+                      if loc["is_desiccator"]]
+    client.put("/locations/desiccator", json={"location_ids": desiccator_ids + [storage]},
+               headers=admin)
+    assert group()["available"] == 1
+    client.put("/locations/desiccator", json={"location_ids": desiccator_ids}, headers=admin)
+
+    client.post(f"/items/{a['id']}/state", json={"state": "destroyed", "note": "scrapped"},
+                headers=admin)
+    assert group()["total"] == 1, "destroyed units are not inventory"
+
+
+def test_thresholds_watch_a_template_and_alert(client, admin, templates, monkeypatch):
     published = []
 
-    async def capture(event):
+    async def fake_publish(event):
         published.append(event)
 
-    monkeypatch.setattr(events_mod, "publish_event", capture)
+    monkeypatch.setattr("lattice_core.events.publish_event", fake_publish)
+    r = client.post("/inventory/thresholds", json={"template_id": templates["PRB"],
+                                                   "min_quantity": 50}, headers=admin)
+    assert r.status_code == 201 and r.json()["min_quantity"] == 50
+    assert r.json()["is_low"] and r.json()["current_quantity"] < 50
+    low = client.get("/inventory/low-stock", headers=admin).json()
+    assert any(t["template_id"] == templates["PRB"] for t in low)
+    events = [e for e in published if e.type.value == "inventory.low_stock"]
+    assert events
+    comp = next(c for e in events for c in e.payload["components"]
+                if c["template_id"] == templates["PRB"])
+    assert comp["min_quantity"] == 50 and comp["link"].startswith("/cards?template=")
+    client.post("/inventory/thresholds", json={"template_id": templates["PRB"],
+                                               "min_quantity": 2}, headers=admin)
+    r = client.post("/inventory/thresholds", json={"template_id": templates["SPM"]},
+                    headers=admin)
+    assert r.status_code == 400
 
-    with SessionLocal() as db:
-        lows = asyncio.run(inv.check_and_alert_low_stock(db))
 
-    assert lows, "the fixture deliberately keeps groups under their minimum"
-    assert published
+def test_dashboard_tiles_match_the_inventory(client, admin):
+    s = client.get("/inventory/summary", headers=admin).json()
+    groups = client.get("/inventory/cards", headers=admin).json()
+    assert s["cards"] == sum(g["total"] for g in groups)
+    assert s["cards_available"] == sum(g["available"] for g in groups)
 
-    for event in published:
-        assert len(event.recipients) == 1, "one digest per recipient, not per threshold"
-        components = event.payload["components"]
-        assert components
-        for c in components:
-            assert {
-                "name", "card_type", "tracking", "version", "item_id", "link",
-                "current_quantity", "min_quantity", "shortfall",
-            } <= set(c)
-            assert c["current_quantity"] <= c["min_quantity"]
-            # every threshold is anchored to a real card, so the alert points at
-            # that card rather than leaving the reader to go hunting for a name
-            assert c["link"] == f"/items/{c['item_id']}"
-            # the plain-text body lists them too, for the email
-            assert c["name"] in event.body and c["link"] in event.body
 
-    # a manager watching several short groups gets them in ONE notification
-    assert max(len(e.payload["components"]) for e in published) >= 2
+def test_a_location_with_items_cannot_be_deleted(client, admin):
+    integ = _loc(client, admin, "Integration Hall")
+    assert client.delete(f"/locations/{integ['id']}", headers=admin).status_code == 400
+
+
+def test_duplicate_location_names_are_refused(client, admin):
+    r = client.post("/locations", json={"name": " lab a — bench 1 "}, headers=admin)
+    assert r.status_code == 400
+
+
+# ─────────────────────────── graphs ───────────────────────────
+def test_template_graph(client, admin, templates):
+    g = client.get("/graph/templates", headers=admin).json()
+    edges = {(e["source"], e["target"]) for e in g["edges"]}
+    assert (templates["FTS"], templates["SPM"]) in edges
+    assert (templates["SPM"], templates["PRB"]) in edges
+    sub = client.get(f"/graph/templates?root_template_id={templates['SPM']}",
+                     headers=admin).json()
+    assert {n["id"] for n in sub["nodes"]} == {templates["SPM"], templates["PRB"],
+                                              templates["FPG"]}
+
+
+def test_graphs_of_a_template_and_of_one_item(client, admin, templates):
+    g = client.get(f"/graph?template_id={templates['FTS']}", headers=admin).json()
+    assert g["roots"] and all(
+        n["template_id"] == templates["FTS"] for n in g["nodes"] if n["id"] in g["roots"]
+    )
+    card = next(i for i in client.get(f"/items?template_id={templates['FPG']}",
+                                      headers=admin).json() if i["serial"] == "C-FPG-001")
+    g = client.get(f"/graph?root_id={card['id']}&ancestors=true", headers=admin).json()
+    serials = {n["serial"] for n in g["nodes"]}
+    assert {"C-FPG-001", "A-SPM-001", "S-FTS-001"} <= serials
+    assert len(g["edges"]) >= 2
+
+
+# ─────────────────────────── audit ───────────────────────────
+def test_audit_periods_and_my_items(client, admin, manager, editor, templates):
+    for period in ("day", "week", "month", "half_year", "year", "all"):
+        assert client.get(f"/audit?period={period}", headers=admin).status_code == 200
+    assert client.get("/audit?period=decade", headers=admin).status_code == 422
+
+    mine = client.get("/audit/my-items?period=all", headers=manager).json()
+    assert mine
+    prb_ids = {i["id"] for i in client.get(f"/items?template_id={templates['PRB']}",
+                                           headers=admin).json()}
+    spm_ids = {i["id"] for i in client.get(f"/items?template_id={templates['SPM']}",
+                                           headers=admin).json()}
+    ids = {a["item_id"] for a in mine}
+    assert ids & prb_ids and not ids & spm_ids, "only items Noa is linked to"
+    assert all(a["item_id"] for a in mine), "no account/template administration noise"
+    # someone linked to nothing sees nothing — not everything
+    assert client.get("/audit/my-items?period=all", headers=editor).json() == []
+
+
+def test_audit_export_is_an_excel_file(client, admin, a_setup):
+    r = client.get(f"/audit/export?item_id={a_setup}&period=all", headers=admin)
+    assert r.status_code == 200
+    ws = load_workbook(io.BytesIO(r.content)).active
+    assert ws["A1"].value == "When (UTC)"
+    assert ws.max_row > 2
+
+
+# ─────────────────────────── documents ───────────────────────────
+def test_documents_are_real_uploads(client, admin, viewer, a_setup):
+    r = client.post(f"/items/{a_setup}/documents",
+                    files={"file": ("report.pdf", b"%PDF-1.4 hello", "application/pdf")},
+                    data={"doc_type": "test"}, headers=admin)
+    assert r.status_code == 201, r.text
+    doc = r.json()
+    assert doc["is_file"] and doc["size_bytes"] == 14 and doc["name"] == "report.pdf"
+    dl = client.get(f"/documents/{doc['id']}/download", headers=viewer)
+    assert dl.status_code == 200 and dl.content == b"%PDF-1.4 hello"
+    assert client.get(f"/documents/{doc['id']}/download").status_code == 401
+    link = client.post(f"/items/{a_setup}/documents",
+                       data={"name": "Wiki", "url": "https://wiki.local/x"}, headers=admin)
+    assert link.status_code == 201 and not link.json()["is_file"]
+    assert client.delete(f"/items/{a_setup}/documents/{doc['id']}",
+                         headers=admin).status_code == 204
+    assert client.get(f"/documents/{doc['id']}/download", headers=admin).status_code == 404
+
+
+def test_a_files_field_takes_staged_uploads(client, admin, editor, templates):
+    staged = client.post("/uploads", files={"file": ("ds.txt", b"datasheet", "text/plain")},
+                         headers=editor)
+    assert staged.status_code == 201
+    item = _new(client, admin, templates["FPG"], description="board with sheet",
+                datasheet=[staged.json()["id"]])
+    files = next(f for f in item["fields"] if f["key"] == "datasheet")
+    assert files["display"][0]["name"] == "ds.txt"
+    other = client.post("/items", json={"template_id": templates["FPG"], "values": {
+        "description": "reusing someone else's file", "datasheet": [staged.json()["id"]]}},
+        headers=admin)
+    assert other.status_code == 400
+
+
+# ─────────────────────────── import / export ───────────────────────────
+def _import_file(client, admin, template_id):
+    query = f"?template_id={template_id}" if template_id else ""
+    r = client.get(f"/data/template{query}", headers=admin)
+    assert r.status_code == 200
+    return load_workbook(io.BytesIO(r.content))
+
+
+def _upload(client, headers, wb, name="items.xlsx"):
+    buf = io.BytesIO()
+    wb.save(buf)
+    return client.post("/data/import", files={"file": (name, buf.getvalue(),
+                       "application/octet-stream")}, headers=headers)
+
+
+def test_import_file_headers_are_the_templates_creation_fields(client, admin, templates):
+    wb = _import_file(client, admin, templates["FPG"])
+    ws = next(s for s in wb.worksheets if s.title.startswith("C-FPG"))
+    assert [c.value for c in ws[1]] == ["Serial", "Description", "Board ID", "Letter"]
+    wb = _import_file(client, admin, templates["SPM"])
+    ws = next(s for s in wb.worksheets if s.title.startswith("A-SPM"))
+    assert [c.value for c in ws[1]] == ["Serial", "Rev", "Location", "Contents"]
+
+
+def test_import_creates_items_and_links_contents(client, admin, templates):
+    wb = _import_file(client, admin, None)
+    fpga = next(s for s in wb.worksheets if s.title.startswith("C-FPG"))
+    fpga.append(["C-FPG-201", "imported fpga one", "00001", "A"])
+    fpga.append([None, "imported fpga two", "FP-00002", None])
+    spm = next(s for s in wb.worksheets if s.title.startswith("A-SPM"))
+    spm.append([None, "Z", "Lab A — Bench 1", "C-FPG-201"])
+    r = _upload(client, admin, wb)
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 3
+    card = next(i for i in client.get(f"/items?template_id={templates['FPG']}",
+                                      headers=admin).json() if i["serial"] == "C-FPG-201")
+    assert card["parent_label"].startswith("Signal Processing Module")
+
+
+def test_import_is_all_or_nothing_and_names_the_bad_cells(client, admin, templates):
+    before = len(client.get("/items", headers=admin).json())
+    wb = _import_file(client, admin, None)
+    fpga = next(s for s in wb.worksheets if s.title.startswith("C-FPG"))
+    fpga.append([None, "a perfectly good row", "00003", "B"])
+    fpga.append([None, "short", "12", "BB"])          # row 3: three bad cells
+    fpga.append(["C-PRB-999", "short", None, None])  # row 4: bad serial *and* description
+    r = _upload(client, admin, wb)
+    assert r.status_code == 400
+    cells = {(e["sheet"][:5], e["cell"]) for e in r.json()["errors"]}
+    assert {("C-FPG", "B3"), ("C-FPG", "C3"), ("C-FPG", "D3"), ("C-FPG", "A4"),
+            ("C-FPG", "B4")} <= cells, "every bad cell of a row is reported, not just the first"
+    assert len(client.get("/items", headers=admin).json()) == before, "nothing was saved"
+
+
+def test_import_rejects_unknown_columns_and_missing_required_ones(client, admin, templates):
+    wb = _import_file(client, admin, templates["FPG"])
+    ws = next(s for s in wb.worksheets if s.title.startswith("C-FPG"))
+    ws.delete_cols(2)  # drop the required Description column
+    ws.cell(row=1, column=5, value="Colour")
+    ws.append([None, "00004", "C"])
+    r = _upload(client, admin, wb)
+    assert r.status_code == 400
+    messages = " ".join(e["error"] for e in r.json()["errors"])
+    assert "Description" in messages and "Colour" in messages
+
+
+def test_import_accepts_only_excel_and_only_managers(client, admin, editor):
+    r = client.post("/data/import", files={"file": ("x.csv", b"a,b", "text/csv")}, headers=admin)
+    assert r.status_code == 400
+    r = client.post("/data/import", files={"file": ("x.xlsx", b"not a zip", "x")}, headers=admin)
+    assert r.status_code == 400 and "readable" in r.json()["detail"]
+    wb = Workbook()
+    assert _upload(client, editor, wb).status_code == 403
+
+
+def test_export_has_a_sheet_per_template(client, admin):
+    r = client.get("/data/export", headers=admin)
+    wb = load_workbook(io.BytesIO(r.content))
+    titles = [ws.title for ws in wb.worksheets]
+    assert any(t.startswith("C-PRB") for t in titles)
+    prb = next(ws for ws in wb.worksheets if ws.title.startswith("C-PRB"))
+    header = [c.value for c in prb[1]]
+    assert header[:4] == ["Serial", "State", "Location", "Parent"]
+    assert "Project" in header
+    first = [c.value for c in prb[2]]
+    assert first[header.index("Project")] == "Falcon"
+
+
+# ─────────────────────────── users, search, map ───────────────────────────
+def test_password_over_the_bcrypt_byte_limit_is_a_clean_422(client, admin):
+    r = client.post("/users", json={"email": "long@lattice.io", "full_name": "Long",
+                                    "password": "א" * 40, "role": "viewer"}, headers=admin)
+    assert r.status_code == 422
+
+
+def test_deleting_a_user_with_proposals_is_refused_not_crashed(client, admin):
+    dana = _users(client, admin)["dana@lattice.io"]
+    r = client.delete(f"/users/{dana['id']}", headers=admin)
+    assert r.status_code == 409
+
+
+def test_deleting_a_user_cleans_template_references(client, admin):
+    r = client.post("/users", json={"email": "temp-mgr@lattice.io", "full_name": "Temp Mgr",
+                                    "password": "password", "role": "manager"}, headers=admin)
+    uid = r.json()["id"]
+    tpl = client.post("/templates", json={
+        "type": "setup", "name": "Temp Owned", "serial_prefix": "TMO",
+        "fields": [{"label": "Managers", "field_type": "managers", "mode": "fixed",
+                    "fixed_value": [uid]}]}, headers=admin).json()
+    assert client.delete(f"/users/{uid}", headers=admin).status_code == 204
+    t = client.get(f"/templates/{tpl['id']}", headers=admin).json()
+    assert t["fields"][0]["fixed_value"] == []
+
+
+def test_login_hints_expose_only_what_a_manager_published(client):
+    hints = client.get("/auth/login-hints").json()
+    assert {h["email"] for h in hints} >= {"noa@lattice.io"}
+    assert all("admin@lattice.io" != h["email"] for h in hints)
+
+
+def test_search_finds_serials_and_templates_and_treats_wildcards_literally(client, admin):
+    r = client.get("/search?q=C-PRB-00", headers=admin).json()
+    assert r["items"] and all("C-PRB-00" in h["title"] for h in r["items"])
+    r = client.get("/search?q=regulator", headers=admin).json()
+    assert any(h["kind"] == "template" for h in r["templates"])
+    assert client.get("/search?q=%25", headers=admin).json()["total"] == 0
+
+
+def test_map_buildings_crud_and_permissions(client, admin, editor, viewer):
+    r = client.post("/map/buildings", json={"name": "Annex", "x": 90, "y": 90, "width": 9,
+                                            "height": 9}, headers=editor)
+    assert r.status_code == 201
+    bid = r.json()["id"]
+    assert client.delete(f"/map/buildings/{bid}", headers=editor).status_code == 403
+    assert client.delete(f"/map/buildings/{bid}", headers=admin).status_code == 204
+    assert client.post("/map/buildings", json={"name": "X"}, headers=viewer).status_code == 403

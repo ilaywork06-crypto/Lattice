@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { searchApi } from '@/api/services'
 import StateChip from '@/components/StateChip.vue'
 import { ROLE_LABELS, TYPE_COLORS, TYPE_ICONS, TYPE_LABELS } from '@/constants'
@@ -10,6 +11,7 @@ const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [v: boolean] }>()
 
 const router = useRouter()
+const { t: i18nT } = useI18n({ useScope: 'global' })
 
 const open = computed({
   get: () => props.modelValue,
@@ -28,7 +30,7 @@ let reqId = 0
 const flatHits = computed<SearchHit[]>(() => {
   const r = results.value
   if (!r) return []
-  return [...r.items, ...r.locations, ...r.users]
+  return [...r.items, ...r.templates, ...r.locations, ...r.users]
 })
 
 function reset() {
@@ -71,16 +73,22 @@ async function run(term: string) {
 
 function hitIcon(hit: SearchHit): string {
   if (hit.kind === 'item') return TYPE_ICONS[(hit.badge ?? 'card') as ItemType]
+  if (hit.kind === 'template') return 'mdi-shape-outline'
   if (hit.kind === 'location') return 'mdi-map-marker'
   return 'mdi-account'
 }
 function hitColor(hit: SearchHit): string {
-  if (hit.kind === 'item') return TYPE_COLORS[(hit.badge ?? 'card') as ItemType]
+  if (hit.kind === 'item' || hit.kind === 'template') {
+    return TYPE_COLORS[(hit.badge ?? 'card') as ItemType]
+  }
   if (hit.kind === 'location') return 'blue-grey'
   return 'deep-purple'
 }
 function hitBadge(hit: SearchHit): string {
   if (hit.kind === 'item') return TYPE_LABELS[(hit.badge ?? 'card') as ItemType]
+  if (hit.kind === 'template') {
+    return `${TYPE_LABELS[(hit.badge ?? 'card') as ItemType]} · ${i18nT('search.templateBadge')}`
+  }
   if (hit.kind === 'user' && hit.badge) return ROLE_LABELS[hit.badge as 'viewer' | 'editor' | 'manager']
   return ''
 }
@@ -160,6 +168,30 @@ function indexOfHit(hit: SearchHit): number {
                 <template #append>
                   <StateChip v-if="hit.state" :state="hit.state" />
                   <v-chip size="x-small" variant="tonal" class="ms-2">{{ hitBadge(hit) }}</v-chip>
+                </template>
+              </v-list-item>
+            </v-list>
+          </template>
+
+          <!-- Templates -->
+          <template v-if="results.templates.length">
+            <div class="text-overline text-medium-emphasis px-2 pt-2">{{ $t('search.groupTemplates') }}</div>
+            <v-list density="comfortable" nav>
+              <v-list-item
+                v-for="hit in results.templates"
+                :key="'t' + hit.id"
+                :active="indexOfHit(hit) === activeIndex"
+                rounded="lg"
+                @click="go(hit)"
+                @mouseenter="activeIndex = indexOfHit(hit)"
+              >
+                <template #prepend>
+                  <v-icon :icon="hitIcon(hit)" :color="hitColor(hit)" />
+                </template>
+                <v-list-item-title class="font-weight-medium">{{ hit.title }}</v-list-item-title>
+                <v-list-item-subtitle v-if="hit.subtitle">{{ hit.subtitle }}</v-list-item-subtitle>
+                <template #append>
+                  <v-chip size="x-small" variant="tonal">{{ hitBadge(hit) }}</v-chip>
                 </template>
               </v-list-item>
             </v-list>

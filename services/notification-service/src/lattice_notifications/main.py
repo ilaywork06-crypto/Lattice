@@ -44,6 +44,12 @@ class UnreadCount(BaseModel):
     count: int
 
 
+class NotificationCounts(BaseModel):
+    total: int
+    unread: int
+    read: int
+
+
 # ─────────────────────────── Lifespan ───────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,18 +90,36 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 @router.get("", response_model=list[NotificationOut])
 def list_notifications(
+    status: str = Query("all", pattern="^(all|unread|read)$"),
     unread_only: bool = False,
     limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
+    """Every notification addressed to me, newest first — all of them (paged
+    with ``offset``), or only the unread / read ones."""
     q = db.query(Notification).filter(Notification.user_id == user_id)
-    if unread_only:
+    if unread_only or status == "unread":
         q = q.filter(Notification.read.is_(False))
+    elif status == "read":
+        q = q.filter(Notification.read.is_(True))
     q = q.order_by(Notification.created_at.desc(), Notification.id.desc())
-    if limit is not None and limit > 0:
-        q = q.limit(limit)
-    return q.all()
+    return q.offset(offset).limit(limit).all()
+
+
+@router.get("/count", response_model=NotificationCounts)
+def counts(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    total = db.query(Notification).filter(Notification.user_id == user_id).count()
+    unread = (
+        db.query(Notification)
+        .filter(Notification.user_id == user_id, Notification.read.is_(False))
+        .count()
+    )
+    return NotificationCounts(total=total, unread=unread, read=total - unread)
 
 
 @router.get("/unread-count", response_model=UnreadCount)

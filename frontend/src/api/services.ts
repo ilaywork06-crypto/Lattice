@@ -1,6 +1,8 @@
 import { coreApi, notificationApi } from './client'
 import type {
   AuditOut,
+  AuditPeriod,
+  AuditQuery,
   BulkRequest,
   BulkResult,
   CatalogCategory,
@@ -22,14 +24,21 @@ import type {
   ItemState,
   ItemType,
   ItemUpdate,
+  LocationBody,
   LocationOut,
   LoginHint,
   LoginResponse,
   MapBuilding,
   MapBuildingCreate,
   MapBuildingUpdate,
+  NotificationCounts,
   NotificationItem,
+  NotificationStatus,
   SearchResults,
+  TemplateCreate,
+  TemplateOut,
+  TemplateSummary,
+  TemplateUpdate,
   ThresholdCreate,
   ThresholdOut,
   User,
@@ -92,8 +101,11 @@ export const itemsApi = {
     const { data } = await coreApi.post<ItemOut>(`/items/${id}/link`, { parent_id })
     return data
   },
-  async unlink(id: number): Promise<ItemOut> {
-    const { data } = await coreApi.post<ItemOut>(`/items/${id}/unlink`, {})
+  /** `location_id`: where the item now is (defaults to its container's). */
+  async unlink(id: number, location_id?: number | null): Promise<ItemOut> {
+    const { data } = await coreApi.post<ItemOut>(`/items/${id}/unlink`, {
+      location_id: location_id ?? null,
+    })
     return data
   },
   /** Replace a container's contents. `child_ids` is the result, not a delta. */
@@ -105,11 +117,17 @@ export const itemsApi = {
     const { data } = await coreApi.post<ItemOut>(`/items/${id}/state`, { state, note })
     return data
   },
+  /** Attach an uploaded file or a link to an item. */
   async addDocument(
     id: number,
-    body: { name: string; url?: string; doc_type?: string },
+    body: { file?: File | null; name?: string; url?: string; doc_type?: string },
   ): Promise<DocumentOut> {
-    const { data } = await coreApi.post<DocumentOut>(`/items/${id}/documents`, body)
+    const form = new FormData()
+    if (body.file) form.append('file', body.file)
+    if (body.name) form.append('name', body.name)
+    if (body.url) form.append('url', body.url)
+    if (body.doc_type) form.append('doc_type', body.doc_type)
+    const { data } = await coreApi.post<DocumentOut>(`/items/${id}/documents`, form)
     return data
   },
   async removeDocument(id: number, docId: number): Promise<void> {
@@ -132,6 +150,62 @@ export const itemsApi = {
 }
 
 // ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+export const templatesApi = {
+  async list(params: { type?: ItemType; search?: string } = {}): Promise<TemplateSummary[]> {
+    const { data } = await coreApi.get<TemplateSummary[]>('/templates', { params })
+    return data
+  },
+  async get(id: number): Promise<TemplateOut> {
+    const { data } = await coreApi.get<TemplateOut>(`/templates/${id}`)
+    return data
+  },
+  async create(body: TemplateCreate): Promise<TemplateOut> {
+    const { data } = await coreApi.post<TemplateOut>('/templates', body)
+    return data
+  },
+  async update(id: number, body: TemplateUpdate): Promise<TemplateOut> {
+    const { data } = await coreApi.patch<TemplateOut>(`/templates/${id}`, body)
+    return data
+  },
+  async remove(id: number): Promise<void> {
+    await coreApi.delete(`/templates/${id}`)
+  },
+  /** Files shared by every item (a files field set on the template). */
+  async uploadFieldFile(id: number, fieldId: number, file: File): Promise<DocumentOut> {
+    const form = new FormData()
+    form.append('file', file)
+    const { data } = await coreApi.post<DocumentOut>(
+      `/templates/${id}/fields/${fieldId}/files`,
+      form,
+    )
+    return data
+  },
+  async removeFile(id: number, docId: number): Promise<void> {
+    await coreApi.delete(`/templates/${id}/files/${docId}`)
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Documents (uploads)
+// ---------------------------------------------------------------------------
+export const documentsApi = {
+  /** Upload a file before the item it belongs to exists; its id then goes
+   *  into a files field's value. */
+  async stage(file: File): Promise<DocumentOut> {
+    const form = new FormData()
+    form.append('file', file)
+    const { data } = await coreApi.post<DocumentOut>('/uploads', form)
+    return data
+  },
+  async download(id: number): Promise<Blob> {
+    const { data } = await coreApi.get(`/documents/${id}/download`, { responseType: 'blob' })
+    return data as Blob
+  },
+}
+
+// ---------------------------------------------------------------------------
 // Catalog (admin-managed project / industry vocabularies)
 // ---------------------------------------------------------------------------
 export const catalogApi = {
@@ -147,6 +221,14 @@ export const catalogApi = {
   },
   async update(id: number, body: Partial<CatalogOptionCreate>): Promise<CatalogOption> {
     const { data } = await coreApi.patch<CatalogOption>(`/catalog/${id}`, body)
+    return data
+  },
+  /** Set one value's links to another category (two-way). */
+  async setLinks(id: number, category: CatalogCategory, optionIds: number[]): Promise<CatalogOption> {
+    const { data } = await coreApi.put<CatalogOption>(`/catalog/${id}/links`, {
+      category,
+      option_ids: optionIds,
+    })
     return data
   },
   async remove(id: number): Promise<void> {
@@ -235,16 +317,23 @@ export const locationsApi = {
     const { data } = await coreApi.get<LocationOut[]>('/locations')
     return data
   },
-  async create(body: Partial<LocationOut>): Promise<LocationOut> {
+  async create(body: LocationBody): Promise<LocationOut> {
     const { data } = await coreApi.post<LocationOut>('/locations', body)
     return data
   },
-  async update(id: number, body: Partial<LocationOut>): Promise<LocationOut> {
+  async update(id: number, body: LocationBody): Promise<LocationOut> {
     const { data } = await coreApi.patch<LocationOut>(`/locations/${id}`, body)
     return data
   },
   async remove(id: number): Promise<void> {
     await coreApi.delete(`/locations/${id}`)
+  },
+  /** Define the desiccator: the full set of locations that belong to it. */
+  async setDesiccator(locationIds: number[]): Promise<LocationOut[]> {
+    const { data } = await coreApi.put<LocationOut[]>('/locations/desiccator', {
+      location_ids: locationIds,
+    })
+    return data
   },
 }
 
@@ -273,9 +362,22 @@ export const mapApi = {
 // Graph
 // ---------------------------------------------------------------------------
 export const graphApi = {
-  async get(rootId?: number): Promise<GraphOut> {
+  /** One item's tree (with `ancestors`, the path up to the top as well). */
+  async item(rootId: number, ancestors = false): Promise<GraphOut> {
     const { data } = await coreApi.get<GraphOut>('/graph', {
-      params: rootId ? { root_id: rootId } : {},
+      params: { root_id: rootId, ancestors },
+    })
+    return data
+  },
+  /** Every live tree built from one template. */
+  async byTemplate(templateId: number): Promise<GraphOut> {
+    const { data } = await coreApi.get<GraphOut>('/graph', { params: { template_id: templateId } })
+    return data
+  },
+  /** The hierarchy as the templates define it. */
+  async templates(rootTemplateId?: number | null): Promise<GraphOut> {
+    const { data } = await coreApi.get<GraphOut>('/graph/templates', {
+      params: rootTemplateId ? { root_template_id: rootTemplateId } : {},
     })
     return data
   },
@@ -285,13 +387,18 @@ export const graphApi = {
 // Audit
 // ---------------------------------------------------------------------------
 export const auditApi = {
-  async list(params: { item_id?: number; limit?: number } = {}): Promise<AuditOut[]> {
+  async list(params: AuditQuery = {}): Promise<AuditOut[]> {
     const { data } = await coreApi.get<AuditOut[]>('/audit', { params })
     return data
   },
-  async myItems(period: 'day' | 'week' | 'month'): Promise<AuditOut[]> {
+  async myItems(period: AuditPeriod): Promise<AuditOut[]> {
     const { data } = await coreApi.get<AuditOut[]>('/audit/my-items', { params: { period } })
     return data
+  },
+  /** The same filters as `list`, as an Excel workbook. */
+  async export(params: AuditQuery = {}): Promise<Blob> {
+    const { data } = await coreApi.get('/audit/export', { params, responseType: 'blob' })
+    return data as Blob
   },
 }
 
@@ -340,26 +447,21 @@ export const usersApi = {
 // Import / Export
 // ---------------------------------------------------------------------------
 export const dataApi = {
-  async template(type?: ItemType): Promise<Blob> {
-    const { data } = await coreApi.get('/data/template', {
-      params: type ? { type } : {},
-      responseType: 'blob',
-    })
+  /** Import workbook: one sheet per template, headers = its creation fields. */
+  async template(params: { template_id?: number; type?: ItemType } = {}): Promise<Blob> {
+    const { data } = await coreApi.get('/data/template', { params, responseType: 'blob' })
     return data as Blob
   },
-  async export(type?: ItemType): Promise<Blob> {
-    const { data } = await coreApi.get('/data/export', {
-      params: type ? { type } : {},
-      responseType: 'blob',
-    })
+  async export(params: { template_id?: number; type?: ItemType } = {}): Promise<Blob> {
+    const { data } = await coreApi.get('/data/export', { params, responseType: 'blob' })
     return data as Blob
   },
+  /** All-or-nothing; a 400 carries `errors` (sheet + cell + reason). */
   async import(file: File): Promise<ImportResult> {
     const form = new FormData()
     form.append('file', file)
-    const { data } = await coreApi.post<ImportResult>('/data/import', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    // No explicit Content-Type: the browser must add the multipart boundary.
+    const { data } = await coreApi.post<ImportResult>('/data/import', form)
     return data
   },
 }
@@ -368,13 +470,19 @@ export const dataApi = {
 // Notifications (notification-service)
 // ---------------------------------------------------------------------------
 export const notificationsApi = {
-  async list(params: { unread_only?: boolean; limit?: number } = {}): Promise<NotificationItem[]> {
+  async list(
+    params: { status?: NotificationStatus; limit?: number; offset?: number } = {},
+  ): Promise<NotificationItem[]> {
     const { data } = await notificationApi.get<NotificationItem[]>('/notifications', { params })
     return data
   },
   async unreadCount(): Promise<number> {
     const { data } = await notificationApi.get<{ count: number }>('/notifications/unread-count')
     return data.count
+  },
+  async counts(): Promise<NotificationCounts> {
+    const { data } = await notificationApi.get<NotificationCounts>('/notifications/count')
+    return data
   },
   async markRead(id: number): Promise<void> {
     await notificationApi.post(`/notifications/${id}/read`)

@@ -31,6 +31,7 @@ const headers = computed(() => [
   { title: t('loc.colBuilding'), key: 'building' },
   { title: t('loc.colRoom'), key: 'room' },
   { title: t('loc.colItems'), key: 'item_count', align: 'center', width: 90 },
+  { title: t('fieldInput.desiccator'), key: 'is_desiccator', align: 'center', width: 110 },
   { title: 'X', key: 'x', width: 70 },
   { title: 'Y', key: 'y', width: 70 },
   { title: '', key: 'actions', sortable: false, align: 'end', width: 120 },
@@ -60,7 +61,7 @@ async function selectLocation(id: number) {
   selected.value = locations.value.find((l) => l.id === id) ?? null
   itemsLoading.value = true
   try {
-    items.value = await itemsApi.list({ location_id: id, limit: 200 })
+    items.value = await itemsApi.list({ location_id: id, limit: 500 })
   } catch (e) {
     ui.error(e)
   } finally {
@@ -342,7 +343,7 @@ onMounted(() => {
 
     <v-row>
       <!-- Map -->
-      <v-col cols="12" md="7">
+      <v-col cols="12" md="8">
         <v-card variant="flat" border>
           <v-card-title class="d-flex align-center gap-2">
             <v-icon icon="mdi-floor-plan" color="primary" />
@@ -381,13 +382,14 @@ onMounted(() => {
               <span><v-icon icon="mdi-circle" color="#2e9e5b" size="12" /> {{ $t('loc.legend1') }}</span>
               <span><v-icon icon="mdi-circle" color="#e6a532" size="12" /> {{ $t('loc.legend4') }}</span>
               <span><v-icon icon="mdi-circle" color="#e5484d" size="12" /> {{ $t('loc.legend10') }}</span>
+              <span><v-icon icon="mdi-circle-outline" color="#26c6da" size="12" /> {{ $t('loc.legendDesiccator') }}</span>
             </div>
           </v-card-text>
         </v-card>
       </v-col>
 
       <!-- Map editor (edit mode) -->
-      <v-col v-if="mapEdit" cols="12" md="5">
+      <v-col v-if="mapEdit" cols="12" md="4">
         <v-card variant="flat" border height="100%">
           <v-card-title class="d-flex align-center gap-2">
             <v-icon icon="mdi-pencil-ruler" color="secondary" />
@@ -488,12 +490,15 @@ onMounted(() => {
       </v-col>
 
       <!-- Selected location items -->
-      <v-col v-else cols="12" md="5">
+      <v-col v-else cols="12" md="4">
         <v-card variant="flat" border height="100%">
           <template v-if="selected">
             <v-card-title class="d-flex align-center gap-2">
               <v-icon icon="mdi-map-marker" color="primary" />
               <span class="text-subtitle-1 font-weight-bold">{{ selected.name }}</span>
+              <v-chip v-if="selected.is_desiccator" size="x-small" color="cyan-darken-2" variant="tonal" prepend-icon="mdi-water-off">
+                {{ $t('fieldInput.desiccator') }}
+              </v-chip>
             </v-card-title>
             <v-card-subtitle>
               {{ [selected.building, selected.room].filter(Boolean).join(' · ') || $t('loc.noBuildingInfo') }}
@@ -514,7 +519,9 @@ onMounted(() => {
                   <TypeIcon :type="it.type" :size="22" />
                 </template>
                 <v-list-item-title class="font-weight-medium">{{ it.name }}</v-list-item-title>
-                <v-list-item-subtitle>{{ it.project || it.industry || '—' }}</v-list-item-subtitle>
+                <v-list-item-subtitle>
+                  {{ it.serial }}<span v-if="it.parent_label"> · {{ $t('loc.inside', { parent: it.parent_label }) }}</span>
+                </v-list-item-subtitle>
                 <template #append>
                   <StateChip :state="it.state" />
                 </template>
@@ -548,6 +555,10 @@ onMounted(() => {
         </template>
         <template #item.building="{ item }">{{ item.building || '—' }}</template>
         <template #item.room="{ item }">{{ item.room || '—' }}</template>
+        <template #item.is_desiccator="{ item }">
+          <v-icon v-if="item.is_desiccator" icon="mdi-water-off" color="cyan-darken-2" size="18" />
+          <span v-else class="text-medium-emphasis">—</span>
+        </template>
         <template #item.item_count="{ item }">
           <v-chip size="x-small" variant="tonal" color="primary">{{ item.item_count }}</v-chip>
         </template>
@@ -606,6 +617,16 @@ onMounted(() => {
           </v-row>
           <v-alert type="info" variant="tonal" density="compact" class="mb-3">
             {{ $t('loc.tip') }}
+          </v-alert>
+          <v-alert
+            v-if="editing?.is_desiccator"
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="mb-3"
+            icon="mdi-water-off"
+          >
+            {{ $t('loc.isDesiccator') }}
           </v-alert>
           <v-textarea v-model="form.notes" :label="$t('loc.notes')" rows="2" auto-grow />
         </v-card-text>

@@ -1,28 +1,32 @@
 """Items: setups, assemblies and cards — reads for everyone, direct mutations
-for managers. Editors mutate through /change-requests instead (see §8/§9)."""
+for managers. Editors (and, for moves, viewers) mutate through /change-requests.
+"""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from lattice_core.database import get_db
 from lattice_core.deps import require_manager, require_viewer
+from lattice_core.errors import DomainError
 from lattice_core.models import (
     CardType,
     Document,
     ExtraItem,
     Item,
     ItemState,
+    ItemTemplate,
     ItemType,
+    Location,
     StorageStatus,
     User,
+    template_children,
 )
 from lattice_core.schemas import (
     BulkAction,
     BulkRequest,
     BulkResult,
     ChildrenRequest,
-    DocumentCreate,
     DocumentOut,
     ExtraItemCreate,
     ExtraItemOut,
@@ -33,9 +37,12 @@ from lattice_core.schemas import (
     LinkRequest,
     MoveRequest,
     StateChangeRequest,
+    UnlinkRequest,
 )
+from lattice_core.services import files as files_svc
 from lattice_core.services import inventory as inv_svc
 from lattice_core.services import items as svc
+from lattice_core.services import views
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -47,8 +54,13 @@ def _get(db: Session, item_id: int) -> Item:
     return item
 
 
-async def _maybe_alert_low_stock(db: Session, item: Item) -> None:
-    if item.type == ItemType.card:
+def _like(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+async def _maybe_alert_low_stock(db: Session, *items: Item) -> None:
+    if any(i.type == ItemType.card for i in items):
         await inv_svc.check_and_alert_low_stock(db)
 
 
@@ -58,98 +70,98 @@ def list_items(
     db: Session = Depends(get_db),
     _: User = Depends(require_viewer),
     type: ItemType | None = None,
+    template_id: int | None = None,
     state: ItemState | None = None,
     card_type: CardType | None = None,
     storage_status: StorageStatus | None = None,
-    project: str | None = None,
-    industry: str | None = None,
     location_id: int | None = None,
+    parent_id: int | None = None,
     unassigned: bool | None = Query(None, description="Only items without a parent"),
-    templates: bool = Query(False, description="Return templates instead of live items"),
+    include_destroyed: bool = True,
+    child_of_template: int | None = Query(
+        None, description="Items whose template may be placed inside this template"
+    ),
+    parent_of_template: int | None = Query(
+        None, description="Items whose template may contain this template"
+    ),
     search: str | None = None,
-    limit: int = Query(200, ge=1, le=1000),
+    limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
-    q = db.query(Item).options(
-        joinedload(Item.location),
-        selectinload(Item.managers),
-        selectinload(Item.children),
+    q = (
+        db.query(Item)
+        .join(Item.template)
+        .options(
+            joinedload(Item.template),
+            joinedload(Item.location),
+            joinedload(Item.parent).joinedload(Item.template),
+            joinedload(Item.industry),
+            joinedload(Item.project),
+            joinedload(Item.team),
+            selectinload(Item.managers),
+            selectinload(Item.children),
+        )
     )
-    # Templates live in their own space and never mix with live items.
-    q = q.filter(Item.is_template.is_(bool(templates)))
     if type:
         q = q.filter(Item.type == type)
+    if template_id:
+        q = q.filter(Item.template_id == template_id)
     if state:
         q = q.filter(Item.state == state)
+    if not include_destroyed:
+        q = q.filter(Item.state != ItemState.destroyed)
     if card_type:
-        q = q.filter(Item.card_type == card_type)
-    if storage_status:
-        q = q.filter(Item.storage_status == storage_status)
-    if project:
-        q = q.filter(Item.project == project)
-    if industry:
-        q = q.filter(Item.industry == industry)
+        q = q.filter(ItemTemplate.card_type == card_type)
     if location_id:
         q = q.filter(Item.location_id == location_id)
+    if parent_id:
+        q = q.filter(Item.parent_id == parent_id)
     if unassigned:
         q = q.filter(Item.parent_id.is_(None))
+    if storage_status:
+        q = q.filter(Item.type == ItemType.card)
+        if storage_status == StorageStatus.assembled:
+            q = q.filter(Item.parent_id.is_not(None))
+        else:
+            q = q.outerjoin(Location, Item.location_id == Location.id).filter(
+                Item.parent_id.is_(None)
+            )
+            q = q.filter(
+                Location.is_desiccator.is_(True)
+                if storage_status == StorageStatus.desiccator
+                else or_(Location.id.is_(None), Location.is_desiccator.is_(False))
+            )
+    if child_of_template:
+        q = q.join(
+            template_children,
+            and_(
+                template_children.c.child_template_id == Item.template_id,
+                template_children.c.parent_template_id == child_of_template,
+            ),
+        )
+    if parent_of_template:
+        q = q.join(
+            template_children,
+            and_(
+                template_children.c.parent_template_id == Item.template_id,
+                template_children.c.child_template_id == parent_of_template,
+            ),
+        )
     if search:
-        # Escape LIKE wildcards so a literal % or _ in the box doesn't match rows
-        # it shouldn't (see routers/search.py:_like).
-        like = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        like = _like(search.strip())
         q = q.filter(
             or_(
-                Item.name.ilike(like, escape="\\"),
+                ItemTemplate.name.ilike(like, escape="\\"),
                 Item.serial.ilike(like, escape="\\"),
             )
         )
-
-    items = q.order_by(Item.type, Item.name).offset(offset).limit(limit).all()
-    return [
-        ItemListOut(
-            id=i.id,
-            type=i.type,
-            name=i.name,
-            industry=i.industry,
-            project=i.project,
-            team=i.team,
-            state=i.state,
-            card_type=i.card_type,
-            version=i.version,
-            serial=i.serial,
-            quantity=i.quantity,
-            storage_status=i.storage_status,
-            parent_id=i.parent_id,
-            location_id=i.location_id,
-            location_name=i.location.name if i.location else None,
-            children_count=len(i.children),
-            is_template=i.is_template,
-            manager_names=[m.full_name for m in i.managers],
-            updated_at=i.updated_at,
-        )
-        for i in items
-    ]
+    items = q.order_by(Item.type, ItemTemplate.name, Item.serial).offset(offset).limit(limit).all()
+    return [views.item_list_out(i) for i in items]
 
 
 @router.get("/{item_id}", response_model=ItemOut)
 def get_item(item_id: int, db: Session = Depends(get_db), _: User = Depends(require_viewer)):
-    item = (
-        db.query(Item)
-        .options(
-            joinedload(Item.location),
-            joinedload(Item.parent),
-            selectinload(Item.children),
-            selectinload(Item.managers),
-            selectinload(Item.state_history),
-            selectinload(Item.documents),
-            selectinload(Item.extra_items),
-        )
-        .filter(Item.id == item_id)
-        .first()
-    )
-    if item is None:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return item
+    return views.item_out(db, _get(db, item_id))
 
 
 # ─────────────────────── direct mutations (manager) ───────────────────────
@@ -157,14 +169,11 @@ def get_item(item_id: int, db: Session = Depends(get_db), _: User = Depends(requ
 async def create_item(
     data: ItemCreate, db: Session = Depends(get_db), user: User = Depends(require_manager)
 ):
-    try:
-        item = svc.create_item(db, data.model_dump(), user)
-    except svc.DomainError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    item = svc.create_item(db, data.model_dump(), user)
     db.commit()
     db.refresh(item)
     await _maybe_alert_low_stock(db, item)
-    return get_item(item.id, db, user)
+    return views.item_out(db, item)
 
 
 @router.patch("/{item_id}", response_model=ItemOut)
@@ -177,11 +186,9 @@ async def update_item(
     item = _get(db, item_id)
     svc.update_item(db, item, data.model_dump(exclude_unset=True), user)
     db.commit()
-    # Editing a commercial card's quantity is now *the* way stock goes down, so
-    # a plain PATCH has to be able to trip the alert — creates and deletes alone
-    # no longer see every change to the numbers.
+    db.refresh(item)
     await _maybe_alert_low_stock(db, item)
-    return get_item(item_id, db, user)
+    return views.item_out(db, item)
 
 
 @router.delete("/{item_id}", status_code=204)
@@ -206,7 +213,10 @@ async def move_item(
     item = _get(db, item_id)
     svc.move_item(db, item, body.location_id, user, body.note)
     db.commit()
-    return get_item(item_id, db, user)
+    db.refresh(item)
+    # Moving cards in or out of the desiccator changes available stock.
+    await _maybe_alert_low_stock(db, item)
+    return views.item_out(db, item)
 
 
 @router.post("/{item_id}/link", response_model=ItemOut)
@@ -218,12 +228,11 @@ async def link_item(
 ):
     child = _get(db, item_id)
     parent = _get(db, body.parent_id)
-    try:
-        svc.link_item(db, child, parent, user)
-    except svc.DomainError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    svc.link_item(db, child, parent, user)
     db.commit()
-    return get_item(item_id, db, user)
+    db.refresh(child)
+    await _maybe_alert_low_stock(db, child)
+    return views.item_out(db, child)
 
 
 @router.put("/{item_id}/children", response_model=ItemOut)
@@ -233,25 +242,29 @@ async def set_children(
     db: Session = Depends(get_db),
     user: User = Depends(require_manager),
 ):
-    """Replace a container's contents (§6/§8) — the counterpart to `child_ids`
-    on create, so a setup or assembly stays editable after it exists."""
+    """Replace a container's contents — the counterpart to `child_ids` on
+    create, so a setup or assembly stays editable after it exists."""
     parent = _get(db, item_id)
-    try:
-        svc.set_children(db, parent, body.child_ids, user)
-    except svc.DomainError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    svc.set_children(db, parent, body.child_ids, user)
     db.commit()
-    return get_item(item_id, db, user)
+    db.refresh(parent)
+    await inv_svc.check_and_alert_low_stock(db)
+    return views.item_out(db, parent)
 
 
 @router.post("/{item_id}/unlink", response_model=ItemOut)
 async def unlink_item(
-    item_id: int, db: Session = Depends(get_db), user: User = Depends(require_manager)
+    item_id: int,
+    body: UnlinkRequest | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_manager),
 ):
     child = _get(db, item_id)
-    svc.unlink_item(db, child, user)
+    svc.unlink_item(db, child, user, body.location_id if body else None)
     db.commit()
-    return get_item(item_id, db, user)
+    db.refresh(child)
+    await _maybe_alert_low_stock(db, child)
+    return views.item_out(db, child)
 
 
 @router.post("/{item_id}/state", response_model=ItemOut)
@@ -262,12 +275,11 @@ async def change_state(
     user: User = Depends(require_manager),
 ):
     item = _get(db, item_id)
-    try:
-        svc.change_state(db, item, body.state, body.note, user)
-    except svc.DomainError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    svc.change_state(db, item, body.state, body.note, user)
     db.commit()
-    return get_item(item_id, db, user)
+    db.refresh(item)
+    await _maybe_alert_low_stock(db, item)
+    return views.item_out(db, item)
 
 
 # ─────────────────────────── bulk operations ───────────────────────────
@@ -277,11 +289,8 @@ async def bulk_action(
     db: Session = Depends(get_db),
     user: User = Depends(require_manager),
 ):
-    """Apply one action to many items atomically (§5 convenience at scale).
-
-    The whole batch succeeds or fails together, so a partial/inconsistent state
-    can never be left behind (§10 reliability).
-    """
+    """Apply one action to many items atomically: the whole batch succeeds or
+    fails together, so a half-applied state can never be left behind."""
     ids = list(dict.fromkeys(body.item_ids))  # dedupe, keep order
     items = {i.id: i for i in db.query(Item).filter(Item.id.in_(ids)).all()}
     missing = [i for i in ids if i not in items]
@@ -295,24 +304,20 @@ async def bulk_action(
             touched_card = touched_card or item.type == ItemType.card
             if body.action == BulkAction.move:
                 if body.location_id is None:
-                    raise svc.DomainError("location_id is required for a bulk move")
+                    raise DomainError("location_id is required for a bulk move")
                 svc.move_item(db, item, body.location_id, user, body.note)
             elif body.action == BulkAction.state_change:
                 if body.state is None:
-                    raise svc.DomainError("state is required for a bulk state change")
+                    raise DomainError("state is required for a bulk state change")
                 svc.change_state(db, item, body.state, body.note, user)
             elif body.action == BulkAction.unlink:
                 svc.unlink_item(db, item, user)
             elif body.action == BulkAction.link:
                 if body.parent_id is None:
-                    raise svc.DomainError("parent_id is required for a bulk link")
-                parent = _get(db, body.parent_id)
-                svc.link_item(db, item, parent, user)
+                    raise DomainError("parent_id is required for a bulk link")
+                svc.link_item(db, item, _get(db, body.parent_id), user)
             elif body.action == BulkAction.delete:
                 svc.delete_item(db, item, user)
-    except svc.DomainError as exc:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         db.rollback()
         raise
@@ -325,15 +330,33 @@ async def bulk_action(
 
 # ─────────────────────── documents & extras ───────────────────────
 @router.post("/{item_id}/documents", response_model=DocumentOut, status_code=201)
-def add_document(
+async def add_document(
     item_id: int,
-    body: DocumentCreate,
+    name: str | None = Form(None),
+    doc_type: str | None = Form(None),
+    url: str | None = Form(None),
+    file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
-    _: User = Depends(require_manager),
+    user: User = Depends(require_manager),
 ):
+    """Attach a document: an uploaded file (multipart ``file``) or a link."""
     _get(db, item_id)
-    doc = Document(item_id=item_id, **body.model_dump())
-    db.add(doc)
+    clean_url = (url or "").strip() or None
+    if file is not None and file.filename:
+        doc = await files_svc.store_upload(
+            db, file, user, name=name, doc_type=(doc_type or "").strip() or None,
+            item_id=item_id,
+        )
+    elif clean_url:
+        if not (name or "").strip():
+            raise HTTPException(status_code=400, detail="A link needs a name")
+        doc = Document(
+            item_id=item_id, name=name.strip(), doc_type=(doc_type or "").strip() or None,
+            url=clean_url, uploaded_by=user.id,
+        )
+        db.add(doc)
+    else:
+        raise HTTPException(status_code=400, detail="Upload a file or give a link")
     db.commit()
     db.refresh(doc)
     return doc
@@ -349,7 +372,7 @@ def delete_document(
     doc = db.get(Document, doc_id)
     if doc is None or doc.item_id != item_id:
         raise HTTPException(status_code=404, detail="Document not found")
-    db.delete(doc)
+    files_svc.delete_document(db, doc)
     db.commit()
 
 

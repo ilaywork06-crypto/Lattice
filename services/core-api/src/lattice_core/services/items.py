@@ -1,4 +1,5 @@
-"""Item lifecycle: create / update / move / link / unlink / state / delete.
+"""Item lifecycle: create (from a template) / update / move / link / unlink /
+state / delete.
 
 These functions are the single source of truth for mutations. They are called
 directly by managers and indirectly (after approval) by the change-request
@@ -7,38 +8,50 @@ executor, so the rules live in exactly one place.
 
 from __future__ import annotations
 
-from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from lattice_core.errors import DomainError
 from lattice_core.models import (
-    SERIAL_TRACKED_CARD_TYPES,
     CardTracking,
+    Document,
+    FieldMode,
+    FieldType,
     Item,
+    ItemFieldValue,
     ItemState,
+    ItemTemplate,
     ItemType,
+    Location,
     StateHistory,
-    StorageStatus,
+    TemplateField,
     User,
-    card_tracking,
 )
-from lattice_core.services import catalog as catalog_svc
+from lattice_core.services import fields as fields_svc
+from lattice_core.services import files as files_svc
+from lattice_core.services import serials as serials_svc
 from lattice_core.services.audit import record_audit
 
+__all__ = ["DomainError"]  # re-exported for callers that predate errors.py
 
-class DomainError(ValueError):
-    """Raised on an invalid domain operation (mapped to HTTP 400)."""
-
-
-# ─────────────────────── relationship rules ───────────────────────
+# Hierarchy by item type: a card sits in an assembly or a setup, an assembly in
+# a setup, a setup is always top of the tree. *Which* templates may sit inside
+# which is narrower still — see ``template_children``.
 _ALLOWED_PARENTS: dict[ItemType, set[ItemType]] = {
-    # A setup can contain assemblies *and* cards directly (§8); an assembly can
-    # contain cards; a setup is always top-of-tree.
     ItemType.card: {ItemType.assembly, ItemType.setup},
     ItemType.assembly: {ItemType.setup},
     ItemType.setup: set(),
 }
 
+# Physical state has its own actions (move / link / state), each with its own
+# rules and history, so an edit form never writes these directly.
+_ACTION_ONLY = {
+    FieldType.location: "move",
+    FieldType.parent: "link/unlink",
+    FieldType.status: "change state",
+}
 
+
+# ─────────────────────────── helpers ───────────────────────────
 def _descendant_ids(item: Item) -> set[int]:
     """All ids beneath ``item`` (used for cascades and cycle checks)."""
     out: set[int] = set()
@@ -53,296 +66,313 @@ def _descendant_ids(item: Item) -> set[int]:
 
 
 def validate_link(child: Item, parent: Item) -> None:
-    if child.id == parent.id:
+    if child.id is not None and child.id == parent.id:
         raise DomainError("An item cannot be linked to itself")
-    if child.is_template or parent.is_template:
-        raise DomainError("Templates cannot take part in the hierarchy")
     allowed = _ALLOWED_PARENTS[child.type]
     if parent.type not in allowed:
+        raise DomainError(f"A {child.type.value} cannot be linked to a {parent.type.value}")
+    if child.template not in parent.template.child_templates:
         raise DomainError(
-            f"A {child.type.value} cannot be linked to a {parent.type.value}"
+            f"'{parent.template.name}' templates don't include '{child.template.name}' — "
+            f"add it to that template's contents to allow it"
         )
-    # Defensive cycle guard: the strict type rules already forbid cycles, but
-    # never let a parent be one of the child's own descendants.
-    if parent.id in _descendant_ids(child):
+    if child.id is not None and parent.id in _descendant_ids(child):
         raise DomainError("That would create a cycle in the hierarchy")
 
 
-def _check_unique_serial(db: Session, item: Item) -> None:
-    """A serial identifies exactly one physical unit, system-wide (§2/§12)."""
-    if not item.serial or item.is_template:
-        return
-    clash = (
-        db.query(Item)
-        .filter(
-            Item.serial == item.serial,
-            Item.id != (item.id or -1),
-            Item.is_template.is_(False),
-        )
+def default_desiccator(db: Session) -> Location | None:
+    return (
+        db.query(Location)
+        .filter(Location.is_desiccator.is_(True))
+        .order_by(Location.name)
         .first()
     )
-    if clash:
-        raise DomainError(
-            f"Serial '{item.serial}' is already used by {clash.type.value} "
-            f"'{clash.name}' (#{clash.id})"
-        )
 
 
-def _enforces_unique_name(item: Item) -> bool:
-    """Whether this item competes for its name.
+def write_system_value(db: Session, item: Item, field_type: FieldType, value) -> None:
+    """Store a system field's value in the item's own column/association."""
+    if field_type == FieldType.industry:
+        item.industry_id = value
+    elif field_type == FieldType.project:
+        item.project_id = value
+    elif field_type == FieldType.team:
+        item.team_id = value
+    elif field_type == FieldType.responsible:
+        item.responsible_id = value
+    elif field_type == FieldType.managers:
+        ids = value or []
+        item.managers = db.query(User).filter(User.id.in_(ids)).all() if ids else []
+    elif field_type == FieldType.status:
+        item.state = ItemState(value) if value else ItemState.built
+    elif field_type == FieldType.quantity:
+        item.quantity = value or 1
+    elif field_type == FieldType.location:
+        item.location_id = value
+    # parent is applied through link_item
 
-    Serial-tracked cards are deliberately exempt: twenty boards off one
-    production run are twenty rows of the *same model*, told apart by serial —
-    there the name describes the model, not the individual. Everything else
-    (setups, assemblies, quantity-tracked commercial cards) is one row per real
-    thing, so its name has to identify it unambiguously. Templates are blueprints
-    rather than physical items and never take part.
+
+def read_system_value(item: Item, field_type: FieldType):
+    return {
+        FieldType.industry: lambda: item.industry_id,
+        FieldType.project: lambda: item.project_id,
+        FieldType.team: lambda: item.team_id,
+        FieldType.responsible: lambda: item.responsible_id,
+        FieldType.managers: lambda: sorted(m.id for m in item.managers),
+        FieldType.status: lambda: item.state.value,
+        FieldType.quantity: lambda: item.quantity,
+        FieldType.location: lambda: item.location_id,
+        FieldType.parent: lambda: item.parent_id,
+    }[field_type]()
+
+
+def _resolve_values(
+    db: Session,
+    template: ItemTemplate,
+    supplied: dict,
+    *,
+    creating: bool,
+    item: Item | None = None,
+) -> dict[int, object]:
+    """Validate supplied values against the template → ``{field_id: value}``.
+
+    Every problem is collected (not just the first), so a form or a spreadsheet
+    row can show them all at once.
     """
-    if item.is_template:
-        return False
-    if item.type == ItemType.card:
-        return card_tracking(item.card_type) is not CardTracking.serial
-    return True
+    by_key = {f.key: f for f in template.fields}
+    errors: list[dict] = []
+    unknown = [k for k in supplied if k not in by_key]
+    for k in unknown:
+        errors.append({"field": k, "error": f"'{k}' is not a field of '{template.name}'"})
 
+    out: dict[int, object] = {}
+    for f in template.fields:
+        present = f.key in supplied
+        if f.mode == FieldMode.fixed:
+            if present and creating:
+                errors.append({
+                    "field": f.key, "label": f.label,
+                    "error": "is set on the template and cannot be changed per item",
+                })
+            elif present:
+                errors.append({
+                    "field": f.key, "label": f.label,
+                    "error": "is set on the template — edit the template to change it",
+                })
+            continue
+        if not creating and not present:
+            continue
+        if not creating and f.field_type in _ACTION_ONLY:
+            errors.append({
+                "field": f.key, "label": f.label,
+                "error": f"use the '{_ACTION_ONLY[f.field_type]}' action to change it",
+            })
+            continue
+        raw = supplied.get(f.key) if present else None
+        try:
+            value = fields_svc.coerce_value(db, f.field_type, raw, f.config)
+            if fields_svc.is_empty(value) and creating:
+                value = fields_svc.default_value(f)
+            if not fields_svc.is_empty(value):
+                fields_svc.check_choice(f, value)
+        except ValueError as exc:
+            errors.append({"field": f.key, "label": f.label, "error": str(exc)})
+            continue
+        if f.required and fields_svc.is_empty(value):
+            errors.append({"field": f.key, "label": f.label, "error": "is required"})
+            continue
+        out[f.id] = value
 
-def _check_unique_name(db: Session, item: Item) -> None:
-    """No two live items may share a name (compared trimmed, case-insensitively)."""
-    if not _enforces_unique_name(item):
-        return
-    normalised = (item.name or "").strip().lower()
-    if not normalised:
-        return
-    clash = (
-        db.query(Item)
-        .filter(
-            func.lower(func.trim(Item.name)) == normalised,
-            Item.id != (item.id or -1),
-            Item.is_template.is_(False),
-            # The exemption above cuts both ways: a batch of serialised boards
-            # must not block a setup (or a commercial card) from taking a name.
-            or_(
-                Item.type != ItemType.card,
-                Item.card_type.is_(None),
-                Item.card_type.notin_(SERIAL_TRACKED_CARD_TYPES),
-            ),
-        )
-        .first()
-    )
-    if clash:
+    if errors:
         raise DomainError(
-            f"The name '{item.name.strip()}' is already used by {clash.type.value} "
-            f"'{clash.name}' (#{clash.id}). Names must be unique."
+            "; ".join(f"{e.get('label') or e['field']}: {e['error']}" for e in errors),
+            errors,
         )
+    return out
 
 
-def _enforce_card_rules(db: Session, item: Item, supplied: set[str]) -> None:
-    """Keep the two kinds of card honest (§2/§12).
+def _attach_files(db: Session, item: Item, field: TemplateField, doc_ids: list[int]) -> None:
+    current = {
+        d.id: d
+        for d in db.query(Document).filter(
+            Document.item_id == item.id, Document.field_id == field.id
+        )
+    }
+    for doc_id in doc_ids or []:
+        if doc_id in current:
+            continue
+        doc = db.get(Document, doc_id)
+        if doc is None:
+            raise DomainError(f"Uploaded file #{doc_id} no longer exists")
+        if doc.item_id is not None or doc.template_id is not None:
+            raise DomainError(f"File '{doc.name}' already belongs to another record")
+        doc.item_id = item.id
+        doc.field_id = field.id
+    for doc_id, doc in current.items():
+        if doc_id not in (doc_ids or []):
+            files_svc.delete_document(db, doc)
 
-    A commercial card is a quantity of interchangeable parts on one row; a
-    company/unique card is one row per physical unit, identified by its serial.
-    Values the caller actually sent that contradict its card type are rejected
-    with an explanation; leftovers from a card type *change* are normalised
-    silently, since a PATCH cannot clear a field by sending ``null``.
-    """
-    if item.type != ItemType.card:
-        item.quantity = 1
+
+def _write_value(db: Session, item: Item, field: TemplateField, value) -> None:
+    if field.field_type in fields_svc.SYSTEM_FIELD_TYPES:
+        write_system_value(db, item, field.field_type, value)
         return
+    if field.field_type == FieldType.files:
+        _attach_files(db, item, field, value or [])
+        return
+    row = next((v for v in item.field_values if v.field_id == field.id), None)
+    if fields_svc.is_empty(value):
+        if row is not None:
+            item.field_values.remove(row)
+        return
+    if row is None:
+        item.field_values.append(ItemFieldValue(field_id=field.id, value=value))
+    else:
+        row.value = value
 
-    tracking = card_tracking(item.card_type)
-    if tracking is None:
-        raise DomainError(
-            "A card must have a card type (commercial / company / unique) — it "
-            "decides whether the card is counted by quantity or by serial."
+
+def effective_value(db: Session, item: Item, field: TemplateField):
+    """What this item shows for a field: the template's, its own, or a column."""
+    if field.field_type == FieldType.files:
+        q = db.query(Document).filter(Document.field_id == field.id)
+        q = (
+            q.filter(Document.template_id == field.template_id)
+            if field.mode == FieldMode.fixed
+            else q.filter(Document.item_id == item.id)
         )
+        return [d.id for d in q.order_by(Document.created_at)]
+    if field.field_type in fields_svc.SYSTEM_FIELD_TYPES:
+        return read_system_value(item, field.field_type)
+    if field.mode == FieldMode.fixed:
+        return field.fixed_value
+    row = next((v for v in item.field_values if v.field_id == field.id), None)
+    return row.value if row else None
 
-    if tracking is CardTracking.quantity:
-        if "serial" in supplied and (item.serial or "").strip():
+
+def _enforce_quantity(item: Item) -> None:
+    if item.type != ItemType.card or item.template.tracking is not CardTracking.quantity:
+        if (item.quantity or 1) != 1:
             raise DomainError(
-                "A commercial card is counted by quantity, not per unit: leave "
-                "the serial empty and set the quantity instead."
+                "Only commercial cards hold a quantity; every other item is one unit"
             )
-        item.serial = None
-        if item.quantity is None:
-            item.quantity = 1
-        if item.quantity < 1:
-            raise DomainError("Quantity must be at least 1.")
-        return
-
-    # Serial-tracked: one row *is* one unit, so the quantity column is pinned.
-    if "quantity" in supplied and (item.quantity or 1) != 1:
-        raise DomainError(
-            f"A {item.card_type.value} card is tracked per unit — add one card "
-            "per physical board (each with its own serial) instead of a quantity."
-        )
-    item.quantity = 1
-    item.serial = (item.serial or "").strip() or None
-    if item.serial is None and not item.is_template:
-        raise DomainError(
-            f"A {item.card_type.value} card must have a serial — it identifies "
-            "the individual board. Use a commercial card for quantity-only stock."
-        )
-    _check_unique_serial(db, item)
-
-
-def _default_storage(item: Item) -> StorageStatus | None:
-    if item.type != ItemType.card:
-        return None
-    return StorageStatus.assembled if item.parent_id else StorageStatus.desiccator
+        item.quantity = 1
 
 
 # ─────────────────────────── create ───────────────────────────
 def create_item(db: Session, data: dict, user: User) -> Item:
-    manager_ids = data.pop("manager_ids", []) or []
-    child_ids = data.pop("child_ids", []) or []
-    parent_id = data.get("parent_id")
-    is_template = bool(data.get("is_template"))
+    """Create one item from its template.
 
-    # Templates are standalone blueprints — no hierarchy involvement.
-    if is_template:
-        data["parent_id"] = parent_id = None
-        child_ids = []
+    ``data``: ``template_id``, ``values`` (``{field key: value}``), optional
+    ``serial`` (otherwise the next one is issued) and ``child_ids`` (existing
+    items to place inside the new one).
+    """
+    template = db.get(ItemTemplate, data.get("template_id")) if data.get("template_id") else None
+    if template is None:
+        raise DomainError("Items are created from a template — choose an existing template")
 
-    try:
-        catalog_svc.validate_item_catalog(db, data.get("project"), data.get("industry"))
-    except catalog_svc.CatalogError as exc:
-        raise DomainError(str(exc)) from exc
+    values = _resolve_values(db, template, dict(data.get("values") or {}), creating=True)
 
-    item = Item(**{k: v for k, v in data.items() if hasattr(Item, k)})
-    item.name = (item.name or "").strip()
-    _enforce_card_rules(db, item, supplied=set(data))
-    _check_unique_name(db, item)
+    item = Item(
+        template=template,
+        type=template.type,
+        state=ItemState.built,
+        quantity=1,
+        created_by=user.id,
+    )
+    parent_id = None
+    for f in template.fields:
+        value = f.fixed_value if f.mode == FieldMode.fixed else values.get(f.id)
+        if f.field_type == FieldType.parent:
+            parent_id = value
+        elif f.field_type in fields_svc.SYSTEM_FIELD_TYPES:
+            write_system_value(db, item, f.field_type, value)
+    _enforce_quantity(item)
 
+    serial = data.get("serial")
+    item.serial = (
+        serials_svc.validate_manual(db, template, serial)
+        if serial and str(serial).strip()
+        else serials_svc.next_serial(db, template)
+    )
+
+    parent = None
     if parent_id:
         parent = db.get(Item, parent_id)
         if parent is None:
-            raise DomainError(f"Parent item {parent_id} not found")
+            raise DomainError(f"Parent item #{parent_id} not found")
         validate_link(item, parent)
-        if item.location_id is None:
-            item.location_id = parent.location_id
-
-    if item.type == ItemType.card and item.storage_status is None and not is_template:
-        item.storage_status = _default_storage(item)
-
-    if manager_ids:
-        item.managers = db.query(User).filter(User.id.in_(manager_ids)).all()
+    if item.location_id is None and parent is None and item.type == ItemType.card:
+        # A new card goes to the desiccator unless told otherwise.
+        desiccator = default_desiccator(db)
+        item.location_id = desiccator.id if desiccator else None
 
     db.add(item)
     db.flush()
 
-    db.add(
-        StateHistory(
-            item_id=item.id, state=item.state, note="Item created", changed_by=user.id
-        )
-    )
+    for f in template.fields:
+        if f.mode != FieldMode.fixed and f.field_type not in fields_svc.SYSTEM_FIELD_TYPES:
+            _write_value(db, item, f, values.get(f.id))
+
+    db.add(StateHistory(item_id=item.id, state=item.state, note="Item created",
+                        changed_by=user.id))
     record_audit(
         db,
         item=item,
         action="create",
-        summary=f"Created {item.type.value} '{item.name}'"
-        + (" (template)" if is_template else ""),
+        summary=f"Created {item.type.value} '{item.label}'",
         user=user,
-        details={"type": item.type.value, "is_template": is_template},
+        details={"template_id": template.id, "serial": item.serial},
     )
 
-    # Bidirectional linking (§6/§8): adopt the requested existing items as
-    # children, dragging their location to match (§9).
-    for cid in child_ids:
-        if cid == item.id:
-            continue
+    if parent is not None:
+        link_item(db, item, parent, user)
+    for cid in list(dict.fromkeys(data.get("child_ids") or [])):
         child = db.get(Item, cid)
         if child is None:
-            raise DomainError(f"Item {cid} not found")
+            raise DomainError(f"Item #{cid} not found")
         link_item(db, child, item, user)
-
     return item
 
 
 # ─────────────────────────── update ───────────────────────────
-_MUTABLE_FIELDS = {
-    "name", "industry", "project", "team", "description", "dmz",
-    "card_type", "responsible", "lead", "production_date", "version",
-    "serial", "storage_status", "quantity",
-}
-
-
 def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
-    manager_ids = data.pop("manager_ids", None)
-    # Deliberately *not* a member of _MUTABLE_FIELDS: a location change is a
-    # move, and §3 requires it to cascade to every descendant. Writing the
-    # column here would strand an assembly's cards at the old location, so it
-    # is handed to move_item below — the one place that owns the cascade rule.
-    new_location_id = data.pop("location_id", None)
-    # Same story for state: it owns state history and the faulty-note rule, so
-    # it goes through change_state rather than being written as a plain column.
-    new_state = data.pop("state", None)
-    state_note = data.pop("state_note", None)
+    """Edit an item's own values (and optionally its serial).
+
+    ``data``: ``values`` (only the fields being changed) and/or ``serial``.
+    Template (white) fields are edited on the template; location, parent and
+    state go through their own actions.
+    """
+    template = item.template
+    supplied = dict(data.get("values") or {})
+    values = _resolve_values(db, template, supplied, creating=False, item=item)
+    by_id = {f.id: f for f in template.fields}
     changed: dict[str, list] = {}
 
-    for field, value in data.items():
-        if field not in _MUTABLE_FIELDS or value is None:
+    for field_id, value in values.items():
+        f = by_id[field_id]
+        before = effective_value(db, item, f)
+        if f.field_type == FieldType.managers:
+            value = sorted(value or [])
+        if before == value or (fields_svc.is_empty(before) and fields_svc.is_empty(value)):
             continue
-        if field == "name":
-            value = value.strip()
-        old = getattr(item, field)
-        if old != value:
-            changed[field] = [
-                old.value if hasattr(old, "value") else old,
-                value.value if hasattr(value, "value") else value,
-            ]
-            setattr(item, field, value)
+        _write_value(db, item, f, value)
+        changed[f.label] = [before, value]
+    _enforce_quantity(item)
 
-    # Validate against the admin catalogs and serial-uniqueness *after* applying,
-    # so the checks see the resulting state (an exception rolls the txn back).
-    if "project" in changed or "industry" in changed:
-        try:
-            catalog_svc.validate_item_catalog(db, item.project, item.industry)
-        except catalog_svc.CatalogError as exc:
-            raise DomainError(str(exc)) from exc
-    # Always re-checked, not just when a card field moved: switching card_type
-    # is what strands a serial on a quantity card (or a quantity on a serialised
-    # one), and the check is the only place that cleans it up. Whatever it
-    # normalises is folded back into `changed` so the audit log tells the whole
-    # story rather than showing a serial that silently vanished (§10).
-    before = {"serial": item.serial, "quantity": item.quantity}
-    _enforce_card_rules(db, item, supplied=set(data))
-    for field, old in before.items():
-        new = getattr(item, field)
-        if old == new:
-            continue
-        changed.setdefault(field, [old, new])[1] = new
-
-    if "name" in changed or "card_type" in changed:
-        _check_unique_name(db, item)
-
-    if manager_ids is not None:
-        # Compare before writing. The edit form always sends `manager_ids`, so an
-        # unconditional assignment logged "Updated … (manager_ids)" on *every*
-        # save — burying real history under identical no-op entries (§10) — and
-        # recorded the old value as a useless `None`.
-        before = sorted(m.id for m in item.managers)
-        after = sorted(set(manager_ids))
-        if before != after:
-            item.managers = db.query(User).filter(User.id.in_(after)).all()
-            changed["manager_ids"] = [before, after]
+    serial = data.get("serial")
+    if serial is not None and str(serial).strip().upper() != item.serial:
+        new = serials_svc.validate_manual(db, template, serial, item)
+        changed["serial"] = [item.serial, new]
+        item.serial = new
 
     if changed:
         record_audit(
             db,
             item=item,
             action="update",
-            summary=f"Updated {item.type.value} '{item.name}' ({', '.join(changed)})",
+            summary=f"Updated {item.type.value} '{item.label}' ({', '.join(changed)})",
             user=user,
             details={"changed": changed},
         )
-
-    # Last, so a catalog/serial rejection above aborts the whole edit rather
-    # than leaving a move behind. `None` means "not supplied" here, matching how
-    # every other field in this function treats it.
-    if new_state is not None:
-        change_state(db, item, new_state, state_note, user)
-    if new_location_id is not None and new_location_id != item.location_id:
-        move_item(db, item, new_location_id, user)
-
     return item
 
 
@@ -358,17 +388,18 @@ def move_item(
     parent is. The only honest way to relocate it is to move the parent, or to
     unlink it first — and the error says which (§3).
     """
+    if db.get(Location, location_id) is None:
+        raise DomainError(f"Location #{location_id} not found")
     if item.parent_id is not None:
         parent = db.get(Item, item.parent_id)
         where = (
-            f"{parent.type.value} '{parent.name}' (#{parent.id})"
-            if parent is not None
+            f"{parent.type.value} '{parent.label}'" if parent is not None
             else f"item #{item.parent_id}"
         )
         raise DomainError(
-            f"'{item.name}' sits inside {where}, so it has no location of its "
+            f"'{item.label}' sits inside {where}, so it has no location of its "
             f"own. Move {where} instead — everything inside it follows — or "
-            f"unlink '{item.name}' first if it has physically come out."
+            f"unlink '{item.label}' first if it has physically come out."
         )
 
     old_location = item.location_id
@@ -382,12 +413,13 @@ def move_item(
         moved_children.append(child.id)
         stack.extend(child.children)
 
+    new_loc = db.get(Location, location_id)
     record_audit(
         db,
         item=item,
         action="move",
         summary=(
-            f"Moved {item.type.value} '{item.name}' to location #{location_id}"
+            f"Moved {item.type.value} '{item.label}' to '{new_loc.name}'"
             + (f" (+{len(moved_children)} linked items)" if moved_children else "")
         ),
         user=user,
@@ -405,8 +437,9 @@ def move_item(
 def link_item(db: Session, child: Item, parent: Item, user: User) -> Item:
     validate_link(child, parent)
     child.parent_id = parent.id
+    child.parent = parent
     # Assembled items inherit the container's location — and so does everything
-    # already inside the child (§9: a container drags its whole contents).
+    # already inside the child (a container drags its whole contents).
     cascaded: list[int] = []
     if parent.location_id is not None:
         child.location_id = parent.location_id
@@ -415,32 +448,25 @@ def link_item(db: Session, child: Item, parent: Item, user: User) -> Item:
             if desc is not None:
                 desc.location_id = parent.location_id
                 cascaded.append(cid)
-    if child.type == ItemType.card:
-        child.storage_status = StorageStatus.assembled
     record_audit(
         db,
         item=child,
         action="link",
-        summary=f"Linked {child.type.value} '{child.name}' into '{parent.name}'"
+        summary=f"Linked {child.type.value} '{child.label}' into '{parent.label}'"
         + (f" (+{len(cascaded)} nested items relocated)" if cascaded else ""),
         user=user,
-        details={"parent_id": parent.id, "parent_name": parent.name, "cascaded": cascaded},
+        details={"parent_id": parent.id, "parent_name": parent.label, "cascaded": cascaded},
     )
     return child
 
 
 def set_children(db: Session, parent: Item, child_ids: list[int], user: User) -> Item:
-    """Make the parent's contents exactly ``child_ids`` (§6/§8).
+    """Make the parent's contents exactly ``child_ids``.
 
-    Contents could only be chosen while *creating* a container, which left no
-    way to correct a setup after the fact. Everything is validated before
-    anything is written, so a bad id can't leave the tree half-edited, and the
-    add/remove both go through link/unlink — the cascade and the audit trail
-    behave exactly as they do anywhere else.
+    Everything is validated before anything is written, so a bad id can't leave
+    the tree half-edited, and the add/remove both go through link/unlink — the
+    cascade and the audit trail behave exactly as they do anywhere else.
     """
-    if parent.is_template:
-        raise DomainError("Templates cannot take part in the hierarchy")
-
     desired = list(dict.fromkeys(child_ids))
     current = {c.id for c in parent.children}
 
@@ -450,10 +476,9 @@ def set_children(db: Session, parent: Item, child_ids: list[int], user: User) ->
             continue
         child = db.get(Item, cid)
         if child is None:
-            raise DomainError(f"Item {cid} not found")
+            raise DomainError(f"Item #{cid} not found")
         validate_link(child, parent)
         to_add.append(child)
-    # Snapshot: unlinking mutates `parent.children` as we walk it.
     to_remove = [c for c in list(parent.children) if c.id not in set(desired)]
 
     for child in to_remove:
@@ -467,30 +492,39 @@ def set_children(db: Session, parent: Item, child_ids: list[int], user: User) ->
             item=parent,
             action="update",
             summary=(
-                f"Updated contents of {parent.type.value} '{parent.name}' "
+                f"Updated contents of {parent.type.value} '{parent.label}' "
                 f"(+{len(to_add)} / -{len(to_remove)})"
             ),
             user=user,
-            details={
-                "added": [c.id for c in to_add],
-                "removed": [c.id for c in to_remove],
-            },
+            details={"added": [c.id for c in to_add], "removed": [c.id for c in to_remove]},
         )
     return parent
 
 
-def unlink_item(db: Session, child: Item, user: User) -> Item:
+def unlink_item(db: Session, child: Item, user: User, location_id: int | None = None) -> Item:
+    """Take an item out of its container.
+
+    It keeps the container's location (that is where it physically is) unless a
+    new one is given; a loose card returns to stock only if that location is
+    part of the desiccator.
+    """
     old_parent = child.parent_id
+    if old_parent is None:
+        raise DomainError(f"'{child.label}' is not inside anything")
+    if child.parent is not None and child in child.parent.children:
+        child.parent.children.remove(child)
     child.parent_id = None
-    if child.type == ItemType.card:
-        child.storage_status = StorageStatus.desiccator
+    if location_id is not None:
+        if db.get(Location, location_id) is None:
+            raise DomainError(f"Location #{location_id} not found")
+        child.location_id = location_id
     record_audit(
         db,
         item=child,
         action="unlink",
-        summary=f"Unlinked {child.type.value} '{child.name}'",
+        summary=f"Unlinked {child.type.value} '{child.label}'",
         user=user,
-        details={"previous_parent_id": old_parent},
+        details={"previous_parent_id": old_parent, "location_id": child.location_id},
     )
     return child
 
@@ -503,25 +537,21 @@ def change_state(
     if old_state == new_state:
         return item
 
-    # §5/§6/§7 — transitions into or out of "faulty" demand an explanation.
+    # Transitions into or out of "faulty" demand an explanation.
     requires_note = new_state == ItemState.faulty or old_state == ItemState.faulty
     if requires_note and not (note and note.strip()):
         raise DomainError(
             "A note explaining how the fault occurred or was resolved is required "
-            "for transitions between 'faulty' and 'working'."
+            "for transitions into or out of 'faulty'."
         )
 
     item.state = new_state
-    db.add(
-        StateHistory(
-            item_id=item.id, state=new_state, note=note, changed_by=user.id
-        )
-    )
+    db.add(StateHistory(item_id=item.id, state=new_state, note=note, changed_by=user.id))
     record_audit(
         db,
         item=item,
         action="state_change",
-        summary=f"State of '{item.name}': {old_state.value} → {new_state.value}",
+        summary=f"State of '{item.label}': {old_state.value} → {new_state.value}",
         user=user,
         details={"from": old_state.value, "to": new_state.value, "note": note},
     )
@@ -534,8 +564,13 @@ def delete_item(db: Session, item: Item, user: User) -> None:
         db,
         item=item,
         action="delete",
-        summary=f"Deleted {item.type.value} '{item.name}'",
+        summary=f"Deleted {item.type.value} '{item.label}'",
         user=user,
-        details={"type": item.type.value},
+        details={"type": item.type.value, "serial": item.serial},
     )
+    for doc in list(item.documents):
+        files_svc.delete_document(db, doc)
+    for child in list(item.children):
+        child.parent_id = None
+    db.flush()
     db.delete(item)

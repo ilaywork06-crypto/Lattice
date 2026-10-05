@@ -79,12 +79,13 @@ const routes: RouteRecordRaw[] = [
     path: '/templates',
     name: 'templates',
     component: () => import('@/pages/TemplatesPage.vue'),
-    meta: {
-      title: 'nav.templates',
-      icon: 'mdi-content-duplicate',
-      group: 'Assets',
-      roles: ['editor', 'manager'],
-    },
+    meta: { title: 'nav.templates', icon: 'mdi-shape-outline', group: 'Assets' },
+  },
+  {
+    path: '/templates/:id',
+    name: 'template-detail',
+    component: () => import('@/pages/TemplateDetailPage.vue'),
+    meta: { title: 'nav.templates', hideInNav: true },
   },
   {
     path: '/change-requests',

@@ -1,44 +1,11 @@
 import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
-import { createVuetify, type ThemeDefinition } from 'vuetify'
+import { createVuetify } from 'vuetify'
 import { aliases, mdi } from 'vuetify/iconsets/mdi'
 import { createVueI18nAdapter } from 'vuetify/locale/adapters/vue-i18n'
 import { useI18n } from 'vue-i18n'
 import { i18n } from '@/i18n'
-
-const latticeLight: ThemeDefinition = {
-  dark: false,
-  colors: {
-    background: '#f4f5fb',
-    surface: '#ffffff',
-    'surface-variant': '#e9eaf3',
-    'on-surface-variant': '#44475a',
-    primary: '#5b6ef5',
-    secondary: '#7b8794',
-    accent: '#00bcd4',
-    success: '#2e9e5b',
-    info: '#2f80ed',
-    warning: '#e6a532',
-    error: '#e5484d',
-  },
-}
-
-const latticeDark: ThemeDefinition = {
-  dark: true,
-  colors: {
-    background: '#0f1117',
-    surface: '#171a23',
-    'surface-variant': '#242836',
-    'on-surface-variant': '#c4c7d4',
-    primary: '#7c8cff',
-    secondary: '#95a1b1',
-    accent: '#28d1e6',
-    success: '#3ecf7a',
-    info: '#4a94ff',
-    warning: '#f0b64a',
-    error: '#ff6169',
-  },
-}
+import { THEMES } from './themes'
 
 export const vuetify = createVuetify({
   // Vuetify reads its locale + RTL direction from vue-i18n via the adapter;
@@ -50,7 +17,7 @@ export const vuetify = createVuetify({
   },
   theme: {
     defaultTheme: 'latticeLight',
-    themes: { latticeLight, latticeDark },
+    themes: THEMES,
   },
   icons: {
     defaultSet: 'mdi',

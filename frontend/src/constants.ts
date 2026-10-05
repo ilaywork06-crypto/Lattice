@@ -3,6 +3,8 @@ import type {
   CardType,
   ChangeAction,
   ChangeStatus,
+  FieldMode,
+  FieldType,
   ItemState,
   ItemType,
   StorageStatus,
@@ -20,19 +22,19 @@ function labelMap<K extends string>(ns: string): Record<K, string> {
   })
 }
 
-// State → Vuetify color mapping (working=green, faulty=red, built=blue,
-// production=amber, used=grey) per the spec.
+// built = blue, ok = green, faulty = red, destroyed = grey.
 export const STATE_COLORS: Record<ItemState, string> = {
-  working: 'success',
-  faulty: 'error',
   built: 'info',
-  production: 'amber-darken-2',
-  used: 'grey',
+  ok: 'success',
+  faulty: 'error',
+  destroyed: 'grey-darken-1',
 }
 
 export const STATE_LABELS = labelMap<ItemState>('state')
 
-export const ITEM_STATES: ItemState[] = ['production', 'built', 'used', 'working', 'faulty']
+export const ITEM_STATES: ItemState[] = ['built', 'ok', 'faulty', 'destroyed']
+/** The states counted on list pages (destroyed units are history). */
+export const ACTIVE_STATES: ItemState[] = ['built', 'ok', 'faulty']
 
 export const TYPE_ICONS: Record<ItemType, string> = {
   setup: 'mdi-server',
@@ -48,19 +50,41 @@ export const TYPE_COLORS: Record<ItemType, string> = {
 
 export const TYPE_LABELS = labelMap<ItemType>('type')
 
+// Hierarchy graph palette: fill by type, border by state.
+export const GRAPH_TYPE_FILL: Record<ItemType, string> = {
+  setup: '#7e6bc4',
+  assembly: '#3a9e92',
+  card: '#4a8fd9',
+}
+export const GRAPH_STATE_BORDER: Record<ItemState, string> = {
+  built: '#2f80ed',
+  ok: '#2e9e5b',
+  faulty: '#e5484d',
+  destroyed: '#6b6f7b',
+}
+
 export const ITEM_TYPES: ItemType[] = ['setup', 'assembly', 'card']
 
-export const CARD_TYPES: CardType[] = ['commercial', 'company', 'unique']
+export const CARD_TYPES: CardType[] = ['copied', 'house', 'white', 'factory', 'commercial']
 
 export const CARD_TYPE_LABELS = labelMap<CardType>('cardType')
 
-// Mirrors `CARD_TRACKING` in the backend's models.py. A commercial card is a
-// quantity of interchangeable parts on one row; the others are one row per
-// physical board, identified by a mandatory serial.
+export const CARD_TYPE_COLORS: Record<CardType, string> = {
+  copied: 'deep-orange',
+  house: 'indigo',
+  white: 'blue-grey',
+  factory: 'brown',
+  commercial: 'teal',
+}
+
+// Mirrors `CARD_TRACKING` in the backend's models.py. Only a commercial card is
+// a quantity of interchangeable parts; every other card is one unit per serial.
 export const CARD_TRACKING: Record<CardType, CardTracking> = {
+  copied: 'serial',
+  house: 'serial',
+  white: 'serial',
+  factory: 'serial',
   commercial: 'quantity',
-  company: 'serial',
-  unique: 'serial',
 }
 
 export const TRACKING_LABELS = labelMap<CardTracking>('tracking')
@@ -83,6 +107,72 @@ export const STORAGE_ICONS: Record<StorageStatus, string> = {
   assembled: 'mdi-puzzle',
   in_use: 'mdi-power-plug',
   desiccator: 'mdi-water-off',
+}
+
+// ---- Template fields --------------------------------------------------------
+export const FIELD_MODES: FieldMode[] = ['fixed', 'choice', 'item']
+export const FIELD_MODE_LABELS = labelMap<FieldMode>('fieldMode')
+export const FIELD_TYPE_LABELS = labelMap<FieldType>('fieldType')
+
+/** Grouped for the "add field" menu. */
+export const FIELD_TYPE_GROUPS: { group: string; types: FieldType[] }[] = [
+  {
+    group: 'text',
+    types: ['text', 'description', 'string', 'serial_string', 'link', 'enum', 'letter'],
+  },
+  { group: 'number', types: ['integer', 'decimal', 'quantity', 'boolean', 'date'] },
+  { group: 'catalog', types: ['industry', 'project', 'team'] },
+  { group: 'people', types: ['managers', 'responsible'] },
+  { group: 'physical', types: ['location', 'parent', 'status'] },
+  { group: 'files', types: ['files'] },
+]
+
+export const FIELD_TYPE_ICONS: Record<FieldType, string> = {
+  text: 'mdi-text',
+  description: 'mdi-text-long',
+  string: 'mdi-form-textbox',
+  serial_string: 'mdi-barcode',
+  link: 'mdi-link-variant',
+  enum: 'mdi-format-list-bulleted',
+  letter: 'mdi-alphabetical-variant',
+  date: 'mdi-calendar',
+  integer: 'mdi-numeric',
+  decimal: 'mdi-decimal',
+  quantity: 'mdi-counter',
+  boolean: 'mdi-toggle-switch-outline',
+  industry: 'mdi-factory',
+  project: 'mdi-folder-outline',
+  team: 'mdi-account-group-outline',
+  managers: 'mdi-account-tie',
+  responsible: 'mdi-account-star',
+  location: 'mdi-map-marker',
+  parent: 'mdi-file-tree',
+  status: 'mdi-list-status',
+  files: 'mdi-paperclip',
+}
+
+/** Types stored as real columns — at most one per template. */
+export const SYSTEM_FIELD_TYPES: FieldType[] = [
+  'industry', 'project', 'team', 'managers', 'responsible', 'location', 'parent', 'status',
+  'quantity',
+]
+/** Physical state of each unit: per item or a list, never fixed. */
+export const PER_UNIT_FIELD_TYPES: FieldType[] = ['location', 'parent', 'status', 'quantity']
+
+export const LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i))
+
+/** "XX-#####": # are typed digits, the rest is filled in automatically. */
+export function applyPattern(pattern: string, raw: string): string | null {
+  const value = raw.trim()
+  const re = new RegExp(
+    '^' + [...pattern].map((c) => (c === '#' ? '\\d' : c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('') + '$',
+  )
+  if (re.test(value)) return value
+  const digits = value.replace(/\s/g, '')
+  const slots = [...pattern].filter((c) => c === '#').length
+  if (!/^\d+$/.test(digits) || digits.length !== slots) return null
+  let i = 0
+  return [...pattern].map((c) => (c === '#' ? digits[i++] : c)).join('')
 }
 
 export const ROLE_LABELS = labelMap<UserRole>('role')
@@ -109,12 +199,21 @@ export const CHANGE_ACTION_ICONS: Record<ChangeAction, string> = {
   link: 'mdi-link-variant',
   unlink: 'mdi-link-variant-off',
   state_change: 'mdi-swap-horizontal',
+  template_create: 'mdi-shape-square-plus',
+  template_update: 'mdi-shape-outline',
 }
 
 // Reading i18n's reactive locale keeps date formatting in sync with the
 // language choice (and makes these reactive inside templates/computeds).
 function intlLocale(): string {
   return i18n.global.locale.value === 'he' ? 'he-IL' : 'en-GB'
+}
+
+export function formatBytes(bytes?: number | null): string {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 export function formatDate(value?: string | null): string {

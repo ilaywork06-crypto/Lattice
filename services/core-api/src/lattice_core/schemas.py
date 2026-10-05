@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import enum
-from datetime import date, datetime
-from typing import Annotated
+from datetime import datetime
+from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
@@ -14,6 +14,8 @@ from lattice_core.models import (
     CatalogCategory,
     ChangeAction,
     ChangeStatus,
+    FieldMode,
+    FieldType,
     ItemState,
     ItemType,
     StorageStatus,
@@ -101,18 +103,42 @@ class LoginHintOut(BaseModel):
 
 # ─────────────────────────── Locations ───────────────────────────
 class LocationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    building: str | None = None
+    room: str | None = None
+    x: float = Field(default=50.0, ge=0, le=100)
+    y: float = Field(default=50.0, ge=0, le=100)
+    notes: str | None = None
+    is_desiccator: bool = False
+
+
+class LocationUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    building: str | None = None
+    room: str | None = None
+    x: float | None = Field(default=None, ge=0, le=100)
+    y: float | None = Field(default=None, ge=0, le=100)
+    notes: str | None = None
+    is_desiccator: bool | None = None
+
+
+class LocationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
     name: str
     building: str | None = None
     room: str | None = None
-    x: float = 50.0
-    y: float = 50.0
+    x: float
+    y: float
     notes: str | None = None
-
-
-class LocationOut(LocationCreate):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
+    is_desiccator: bool = False
     item_count: int = 0
+
+
+class DesiccatorUpdate(BaseModel):
+    """The full set of locations that make up the desiccator."""
+
+    location_ids: list[int] = Field(default_factory=list)
 
 
 # ─────────────────────────── Map buildings ───────────────────────────
@@ -143,7 +169,7 @@ class MapBuildingOut(MapBuildingCreate):
     id: int
 
 
-# ─────────────────────────── Catalog (admin vocabularies) ───────────────────────────
+# ─────────────────────────── Catalog ───────────────────────────
 class CatalogOptionCreate(BaseModel):
     category: CatalogCategory
     value: str = Field(min_length=1, max_length=255)
@@ -168,27 +194,133 @@ class CatalogOptionOut(BaseModel):
     active: bool
     sort_order: int
     usage_count: int = 0
+    # Ids of the values (of other categories) this one is linked to.
+    linked_ids: list[int] = Field(default_factory=list)
 
 
-# ─────────────────────────── Nested item bits ───────────────────────────
+class CatalogLinksUpdate(BaseModel):
+    """The option's links to one other category, after the edit."""
+
+    category: CatalogCategory
+    option_ids: list[int] = Field(default_factory=list)
+
+
+class CatalogLinkOut(BaseModel):
+    a_id: int
+    b_id: int
+
+
+# ─────────────────────────── Templates ───────────────────────────
+class TemplateFieldIn(BaseModel):
+    id: int | None = None
+    key: str | None = None
+    label: str = Field(min_length=1, max_length=255)
+    field_type: FieldType
+    mode: FieldMode = FieldMode.item
+    required: bool = False
+    config: dict = Field(default_factory=dict)
+    fixed_value: Any = None
+
+
+class TemplateCreate(BaseModel):
+    type: ItemType
+    name: str = Field(min_length=1, max_length=255)
+    card_type: CardType | None = None
+    serial_prefix: str = Field(min_length=3, max_length=3)
+    description: str | None = None
+    fields: list[TemplateFieldIn] = Field(default_factory=list)
+    child_template_ids: list[int] = Field(default_factory=list)
+
+
+class TemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    card_type: CardType | None = None
+    serial_prefix: str | None = Field(default=None, min_length=3, max_length=3)
+    description: str | None = None
+    # When given: the template's complete field list after the edit (fields
+    # missing from it are removed; `id` marks an existing field).
+    fields: list[TemplateFieldIn] | None = None
+    child_template_ids: list[int] | None = None
+
+
+class DocumentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    doc_type: str | None = None
+    url: str | None = None
+    is_file: bool = False
+    original_filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    field_id: int | None = None
+    created_at: datetime | None = None
+
+
+class TemplateFieldOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    key: str
+    label: str
+    field_type: FieldType
+    mode: FieldMode
+    required: bool
+    position: int
+    config: dict
+    fixed_value: Any = None
+    # Human-readable rendering of fixed_value (names instead of ids).
+    fixed_display: Any = None
+    # Labels for a list field's options, in order (same length as options).
+    options_display: list[str] = Field(default_factory=list)
+    files: list[DocumentOut] = Field(default_factory=list)
+
+
+class TemplateBrief(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    type: ItemType
+    name: str
+    card_type: CardType | None = None
+    serial_prefix: str
+
+
+class TemplateCounts(BaseModel):
+    """Units per state, destroyed excluded (they are history, not inventory)."""
+
+    built: int = 0
+    ok: int = 0
+    faulty: int = 0
+    total: int = 0
+    destroyed: int = 0
+
+
+class TemplateSummary(TemplateBrief):
+    tracking: CardTracking | None = None
+    description: str | None = None
+    counts: TemplateCounts = Field(default_factory=TemplateCounts)
+    child_template_ids: list[int] = Field(default_factory=list)
+    parent_template_ids: list[int] = Field(default_factory=list)
+    field_count: int = 0
+    updated_at: datetime | None = None
+
+
+class TemplateOut(TemplateSummary):
+    fields: list[TemplateFieldOut] = Field(default_factory=list)
+    child_templates: list[TemplateBrief] = Field(default_factory=list)
+    parent_templates: list[TemplateBrief] = Field(default_factory=list)
+    next_serial: str | None = None
+    created_at: datetime | None = None
+
+
+# ─────────────────────────── Items ───────────────────────────
 class StateHistoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     state: ItemState
     note: str | None
     changed_by: int | None
+    changed_by_name: str | None = None
     changed_at: datetime
-
-
-class DocumentCreate(BaseModel):
-    name: str
-    url: str | None = None
-    doc_type: str | None = None
-
-
-class DocumentOut(DocumentCreate):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
 
 
 class ExtraItemCreate(BaseModel):
@@ -203,17 +335,34 @@ class ExtraItemOut(ExtraItemCreate):
     id: int
 
 
-# ─────────────────────────── Items ───────────────────────────
+class CatalogRef(BaseModel):
+    id: int
+    value: str
+
+
 class ItemBrief(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
     type: ItemType
+    template_id: int
     name: str
+    serial: str
     state: ItemState
     card_type: CardType | None = None
-    serial: str | None = None
-    version: str | None = None
     location_id: int | None = None
+
+
+class ItemFieldOut(BaseModel):
+    field_id: int
+    key: str
+    label: str
+    field_type: FieldType
+    mode: FieldMode
+    required: bool
+    config: dict = Field(default_factory=dict)
+    value: Any = None
+    # Human-readable rendering: names for ids, files as documents.
+    display: Any = None
+    missing: bool = False
 
 
 class ItemListOut(BaseModel):
@@ -221,109 +370,70 @@ class ItemListOut(BaseModel):
 
     id: int
     type: ItemType
+    template_id: int
     name: str
-    industry: str | None = None
-    project: str | None = None
-    team: str | None = None
+    serial: str
     state: ItemState
     card_type: CardType | None = None
-    version: str | None = None
-    serial: str | None = None
     quantity: int = 1
     storage_status: StorageStatus | None = None
     parent_id: int | None = None
+    parent_label: str | None = None
     location_id: int | None = None
     location_name: str | None = None
+    industry: str | None = None
+    project: str | None = None
+    team: str | None = None
     children_count: int = 0
-    is_template: bool = False
     manager_names: list[str] = Field(default_factory=list)
     updated_at: datetime
 
 
 class ItemCreate(BaseModel):
-    type: ItemType
-    name: str
-    industry: str | None = None
-    project: str | None = None
-    team: str | None = None
-    state: ItemState = ItemState.production
-    description: str | None = None
-    dmz: str | None = None
-    location_id: int | None = None
-    parent_id: int | None = None
-    is_template: bool = False
-    # card-specific
-    card_type: CardType | None = None
-    responsible: str | None = None
-    lead: str | None = None
-    production_date: date | None = None
-    version: str | None = None
+    template_id: int
+    # {field key: value} for the template's per-item and list fields.
+    values: dict[str, Any] = Field(default_factory=dict)
+    # Leave empty to get the next serial of the template.
     serial: str | None = None
-    # Commercial cards only: how many interchangeable units this row holds.
-    # Serial-tracked cards are one row per unit and must leave it at 1.
-    quantity: int = Field(default=1, ge=1)
-    storage_status: StorageStatus | None = None
-    # linked manager ids
-    manager_ids: list[int] = Field(default_factory=list)
-    # existing items to pull in as children on creation (bidirectional linking, §6/§8):
-    # a setup can adopt assemblies *and* cards, an assembly can adopt cards.
+    # Existing items to place inside the new one.
     child_ids: list[int] = Field(default_factory=list)
 
 
 class ItemUpdate(BaseModel):
-    name: str | None = None
-    industry: str | None = None
-    project: str | None = None
-    team: str | None = None
-    description: str | None = None
-    dmz: str | None = None
-    card_type: CardType | None = None
-    responsible: str | None = None
-    lead: str | None = None
-    production_date: date | None = None
-    version: str | None = None
+    # Only the fields being changed.
+    values: dict[str, Any] = Field(default_factory=dict)
     serial: str | None = None
-    quantity: int | None = Field(default=None, ge=1)
-    storage_status: StorageStatus | None = None
-    location_id: int | None = None
-    state: ItemState | None = None
-    # Carries the explanation the faulty-transition rule demands, so the edit
-    # form can change state without a second round-trip through StateDialog.
-    state_note: str | None = None
-    manager_ids: list[int] | None = None
 
 
 class ItemOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
     type: ItemType
-    is_template: bool = False
+    template: TemplateBrief
     name: str
-    industry: str | None
-    project: str | None
-    team: str | None
+    serial: str
     state: ItemState
-    description: str | None
-    dmz: str | None
-    parent_id: int | None
-    location_id: int | None
-    card_type: CardType | None
-    responsible: str | None
-    lead: str | None
-    production_date: date | None
-    version: str | None
-    serial: str | None
+    card_type: CardType | None = None
+    tracking: CardTracking | None = None
     quantity: int = 1
-    storage_status: StorageStatus | None
-    created_at: datetime
-    updated_at: datetime
+    storage_status: StorageStatus | None = None
+    parent_id: int | None = None
+    location_id: int | None = None
     location: LocationOut | None = None
     parent: ItemBrief | None = None
     children: list[ItemBrief] = Field(default_factory=list)
+    industry: CatalogRef | None = None
+    project: CatalogRef | None = None
+    team: CatalogRef | None = None
+    responsible: UserBrief | None = None
     managers: list[UserBrief] = Field(default_factory=list)
+    fields: list[ItemFieldOut] = Field(default_factory=list)
     state_history: list[StateHistoryOut] = Field(default_factory=list)
     documents: list[DocumentOut] = Field(default_factory=list)
     extra_items: list[ExtraItemOut] = Field(default_factory=list)
+    # Templates whose items may be placed inside this one.
+    child_templates: list[TemplateBrief] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
 
 
 class MoveRequest(BaseModel):
@@ -333,6 +443,11 @@ class MoveRequest(BaseModel):
 
 class LinkRequest(BaseModel):
     parent_id: int
+
+
+class UnlinkRequest(BaseModel):
+    # Where the item now physically is; defaults to its container's location.
+    location_id: int | None = None
 
 
 class ChildrenRequest(BaseModel):
@@ -350,9 +465,11 @@ class StateChangeRequest(BaseModel):
 class ChangeRequestCreate(BaseModel):
     action: ChangeAction
     item_id: int | None = None
+    template_id: int | None = None
     item_type: ItemType | None = None
     payload: dict = Field(default_factory=dict)
-    description: str = Field(min_length=1)
+    # What changes — filled in from the action when left empty.
+    description: str | None = None
     reason: str = Field(min_length=1)
 
 
@@ -361,6 +478,7 @@ class ChangeRequestOut(BaseModel):
     id: int
     action: ChangeAction
     item_id: int | None
+    template_id: int | None = None
     item_type: ItemType | None
     item_name: str | None
     payload: dict
@@ -385,6 +503,7 @@ class AuditOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     item_id: int | None
+    template_id: int | None = None
     item_name: str | None
     action: str
     summary: str
@@ -396,48 +515,42 @@ class AuditOut(BaseModel):
 
 # ─────────────────────────── Inventory ───────────────────────────
 class ThresholdCreate(BaseModel):
-    """Created from a card that exists, not from a typed-in name.
-
-    The server derives the watched group (`card_type`, `name`, `version`) from
-    `item_id`, so a threshold can never point at a model nobody stocks.
-    """
-
-    item_id: int
+    template_id: int
     min_quantity: int = Field(default=0, ge=0)
     editor_email: EmailStr | None = None
-    # Watch every version of the chosen card's model instead of just its own.
-    any_version: bool = False
 
 
 class ThresholdOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     id: int
-    item_id: int | None = None
-    card_type: CardType
-    name: str | None = None
-    version: str | None = None
+    template_id: int
+    name: str
+    card_type: CardType | None = None
+    tracking: CardTracking | None = None
     min_quantity: int = 0
     editor_email: EmailStr | None = None
-    tracking: CardTracking | None = None
+    # Units available for building: loose, at a desiccator location, built/ok.
     current_quantity: int = 0
     is_low: bool = False
 
 
 class InventoryGroup(BaseModel):
-    card_type: CardType
-    # How `total` was arrived at: summed quantities on one (or few) commercial
-    # records, or one row per serialised unit. The UI shows this so nobody has
-    # to guess where the number came from.
-    tracking: CardTracking | None = None
+    """Stock of one card template."""
+
+    template_id: int
     name: str
-    version: str | None = None
-    production_date: date | None = None
-    total: int
-    in_use: int
-    desiccator: int
-    assembled: int
+    card_type: CardType
+    tracking: CardTracking | None = None
+    serial_prefix: str
+    total: int            # every unit except destroyed ones
+    available: int        # desiccator + loose + built/ok — what can be built with
+    desiccator: int       # loose at a desiccator location (any non-destroyed state)
+    in_use: int           # loose outside the desiccator
+    assembled: int        # inside an assembly or setup
+    faulty: int
     records: int = 0
-    serials: list[str] = Field(default_factory=list)
+    available_serials: list[str] = Field(default_factory=list)
+    min_quantity: int | None = None
+    is_low: bool = False
 
 
 class InventorySummary(BaseModel):
@@ -446,9 +559,11 @@ class InventorySummary(BaseModel):
     cards: int
     cards_in_use: int
     cards_desiccator: int
+    cards_available: int
     faulty_items: int
     pending_change_requests: int
     low_stock_alerts: int
+    templates: int = 0
 
 
 # ─────────────────────────── Graph ───────────────────────────
@@ -456,8 +571,12 @@ class GraphNode(BaseModel):
     id: int
     label: str
     type: ItemType
-    state: ItemState
+    state: ItemState | None = None
     card_type: CardType | None = None
+    serial: str | None = None
+    template_id: int | None = None
+    # Template graph: how many live items the template has.
+    count: int | None = None
 
 
 class GraphEdge(BaseModel):
@@ -468,6 +587,8 @@ class GraphEdge(BaseModel):
 class GraphOut(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    # Trees of live items drawn: their root ids.
+    roots: list[int] = Field(default_factory=list)
 
 
 # ─────────────────────────── Bulk operations ───────────────────────────
@@ -497,7 +618,7 @@ class BulkResult(BaseModel):
 
 # ─────────────────────────── Global search ───────────────────────────
 class SearchHit(BaseModel):
-    kind: str            # "item" | "location" | "user" | "change_request"
+    kind: str            # "item" | "template" | "location" | "user"
     id: int
     title: str
     subtitle: str | None = None
@@ -510,5 +631,21 @@ class SearchResults(BaseModel):
     query: str
     total: int
     items: list[SearchHit] = Field(default_factory=list)
+    templates: list[SearchHit] = Field(default_factory=list)
     locations: list[SearchHit] = Field(default_factory=list)
     users: list[SearchHit] = Field(default_factory=list)
+
+
+# ─────────────────────────── Import ───────────────────────────
+class ImportCellError(BaseModel):
+    sheet: str
+    cell: str | None = None
+    row: int | None = None
+    column: str | None = None
+    error: str
+
+
+class ImportResult(BaseModel):
+    created: int
+    by_template: dict[str, int] = Field(default_factory=dict)
+    errors: list[ImportCellError] = Field(default_factory=list)

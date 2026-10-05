@@ -1,51 +1,48 @@
 <script setup lang="ts">
+// Create an item from its template, or edit an item's own values.
+//
+// Everything about the form comes from the template: grey fields are filled
+// in here, list fields offer the template's values (the first preselected),
+// and white fields are shown read-only — they are the template's, shared by
+// every item made from it. Managers save directly; anyone else's form turns
+// into a change-request proposal.
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { itemsApi, locationsApi, usersApi } from '@/api/services'
+import { extractErrorList } from '@/api/client'
+import { itemsApi, templatesApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
-import { useCatalogStore } from '@/stores/catalog'
-import {
-  CARD_TYPES,
-  CARD_TYPE_LABELS,
-  isQuantityTracked,
-  ITEM_STATES,
-  STATE_LABELS,
-  STORAGE_LABELS,
-  STORAGE_STATUSES,
-  TYPE_LABELS,
-} from '@/constants'
+import FieldInput from '@/components/FieldInput.vue'
+import { CARD_TYPE_LABELS, TYPE_LABELS } from '@/constants'
 import type {
-  CardType,
   ItemCreate,
+  ItemListOut,
   ItemOut,
-  ItemState,
   ItemType,
   ItemUpdate,
-  LocationOut,
-  StorageStatus,
-  UserBrief,
+  TemplateFieldOut,
+  TemplateOut,
+  TemplateSummary,
 } from '@/api/types'
 
 const props = defineProps<{
   modelValue: boolean
   mode: 'create' | 'edit'
-  type?: ItemType
+  /** create: which kind of template to pick from (when no template is given) */
+  type?: ItemType | null
+  /** create: start from this template */
+  templateId?: number | null
+  /** edit: the item */
   item?: ItemOut | null
-  // Pre-fill a *create* form (duplicate an item, or spin up from a template).
-  prefill?: Partial<ItemCreate> | null
-  // Creating a reusable template — hides all hierarchy fields.
-  asTemplate?: boolean
-  // manager submits directly; editor proposes. Controls the submit button label.
   direct: boolean
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
-  submit: [payload: ItemCreate | ItemUpdate]
+  saved: [item: ItemOut]
+  propose: [payload: ItemCreate | ItemUpdate, template: TemplateOut]
 }>()
 
 const ui = useUiStore()
-const catalog = useCatalogStore()
 const { t } = useI18n({ useScope: 'global' })
 
 const open = computed({
@@ -53,495 +50,297 @@ const open = computed({
   set: (v) => emit('update:modelValue', v),
 })
 
-const itemType = computed<ItemType>(() => props.type ?? props.item?.type ?? 'setup')
-const isCard = computed(() => itemType.value === 'card')
-// Only when creating a real (non-template) item can we wire up the hierarchy.
-const showHierarchy = computed(() => props.mode === 'create' && !props.asTemplate)
-
-// Which parent types this item may attach to (§8: a card can sit directly in a
-// setup as well as an assembly).
-const ALLOWED_PARENTS: Record<ItemType, ItemType[]> = {
-  card: ['assembly', 'setup'],
-  assembly: ['setup'],
-  setup: [],
-}
-// Which existing items this item can adopt as children (§6/§8).
-const CHILD_TYPES: Record<ItemType, ItemType[]> = {
-  setup: ['assembly', 'card'],
-  assembly: ['card'],
-  card: [],
-}
-const allowedParents = computed(() => ALLOWED_PARENTS[itemType.value])
-const childTypes = computed(() => CHILD_TYPES[itemType.value])
-
-interface FormModel {
-  name: string
-  industry: string | null
-  project: string | null
-  team: string
-  state: ItemState
-  description: string
-  dmz: string
-  location_id: number | null
-  parent_id: number | null
-  card_type: CardType | null
-  responsible: string
-  lead: string
-  production_date: string
-  version: string
-  serial: string
-  quantity: number
-  storage_status: StorageStatus | null
-  manager_ids: number[]
-  child_ids: number[]
-  state_note: string
-}
-
-function emptyModel(): FormModel {
-  return {
-    name: '',
-    industry: null,
-    project: null,
-    team: '',
-    state: 'production',
-    description: '',
-    dmz: '',
-    location_id: null,
-    parent_id: null,
-    card_type: null,
-    responsible: '',
-    lead: '',
-    production_date: '',
-    version: '',
-    serial: '',
-    quantity: 1,
-    storage_status: null,
-    manager_ids: [],
-    child_ids: [],
-    state_note: '',
-  }
-}
-
-const form = reactive<FormModel>(emptyModel())
-
-// The two kinds of card are filled in differently, and the form says so rather
-// than letting the server reject the save: a commercial card is a quantity of
-// interchangeable parts, everything else is one board with its own serial.
-const byQuantity = computed(() => isCard.value && isQuantityTracked(form.card_type))
-const bySerial = computed(() => isCard.value && !!form.card_type && !byQuantity.value)
+const templates = ref<TemplateSummary[]>([])
+const chosenId = ref<number | null>(null)
+const template = ref<TemplateOut | null>(null)
+const loadingTpl = ref(false)
+const values = reactive<Record<string, unknown>>({})
+const original = ref<Record<string, unknown>>({})
+const serial = ref('')
+const childIds = ref<number[]>([])
+const childOptions = ref<ItemListOut[]>([])
+const fieldErrors = ref<Record<string, string>>({})
 const formRef = ref()
-const valid = ref(false)
 const saving = ref(false)
 
-const locations = ref<LocationOut[]>([])
-const managers = ref<UserBrief[]>([])
-const parentOptions = ref<{ id: number; name: string; type: ItemType }[]>([])
-const childOptions = ref<{ id: number; name: string; type: ItemType; parent_id: number | null }[]>([])
-const loadingRefs = ref(false)
+// Physical state has its own actions on the item page.
+const ACTION_ONLY = ['location', 'parent', 'status']
 
-// Project/industry dropdowns from the admin catalog (preserving any legacy value).
-const projectItems = computed(() => catalog.activeValues(catalog.projects, form.project))
-const industryItems = computed(() => catalog.activeValues(catalog.industries, form.industry))
+const editableFields = computed<TemplateFieldOut[]>(() => {
+  const fields = template.value?.fields ?? []
+  return fields.filter((f) => {
+    if (f.mode === 'fixed') return false
+    if (props.mode === 'edit' && ACTION_ONLY.includes(f.field_type)) return false
+    return true
+  })
+})
+const fixedFields = computed(() => (template.value?.fields ?? []).filter((f) => f.mode === 'fixed'))
 
-const parentSelectItems = computed(() =>
-  parentOptions.value.map((p) => ({
-    title: `${p.name} · ${TYPE_LABELS[p.type]}`,
-    value: p.id,
-  })),
-)
-const childSelectItems = computed(() =>
-  childOptions.value.map((c) => ({
-    title: c.parent_id
-      ? `${c.name} · ${TYPE_LABELS[c.type]} (${t('itemForm.willMove')})`
-      : `${c.name} · ${TYPE_LABELS[c.type]}`,
-    value: c.id,
-  })),
-)
+function fieldDefault(f: TemplateFieldOut): unknown {
+  if (f.mode === 'choice') {
+    const first = (f.config.options ?? [])[0]
+    if (first === undefined) return null
+    return f.field_type === 'managers' ? [first] : first
+  }
+  if (f.field_type === 'boolean') return false
+  if (f.field_type === 'managers' || f.field_type === 'files') return []
+  return null
+}
 
-async function loadReferences() {
-  loadingRefs.value = true
+async function loadTemplate(id: number | null) {
+  template.value = null
+  Object.keys(values).forEach((k) => delete values[k])
+  fieldErrors.value = {}
+  if (!id) return
+  loadingTpl.value = true
   try {
-    const [locs, mgrs] = await Promise.all([
-      locationsApi.list(),
-      usersApi.managers(),
-      catalog.ensure(),
-    ])
-    locations.value = locs
-    managers.value = mgrs
-
-    if (showHierarchy.value && allowedParents.value.length) {
-      const lists = await Promise.all(
-        allowedParents.value.map((ty) => itemsApi.list({ type: ty, limit: 500 })),
-      )
-      parentOptions.value = lists
-        .flat()
-        .filter((i) => i.id !== props.item?.id)
-        .map((i) => ({ id: i.id, name: i.name, type: i.type }))
+    template.value = await templatesApi.get(id)
+    if (props.mode === 'edit' && props.item) {
+      for (const f of props.item.fields) values[f.key] = f.value
+      original.value = JSON.parse(JSON.stringify(values))
+      serial.value = props.item.serial
     } else {
-      parentOptions.value = []
-    }
-
-    if (showHierarchy.value && childTypes.value.length) {
-      const lists = await Promise.all(
-        childTypes.value.map((ty) => itemsApi.list({ type: ty, limit: 500 })),
-      )
-      childOptions.value = lists
-        .flat()
-        .map((i) => ({ id: i.id, name: i.name, type: i.type, parent_id: i.parent_id }))
-        // show unassigned first, then already-parented (which will be re-homed)
-        .sort((a, b) => Number(!!a.parent_id) - Number(!!b.parent_id) || a.name.localeCompare(b.name))
-    } else {
-      childOptions.value = []
+      for (const f of template.value.fields) {
+        if (f.mode !== 'fixed') values[f.key] = fieldDefault(f)
+      }
+      serial.value = ''
+      childIds.value = []
+      if (template.value.child_templates.length) {
+        childOptions.value = (await itemsApi.list({
+          child_of_template: id,
+          include_destroyed: false,
+        })).sort((a, b) => Number(!!a.parent_id) - Number(!!b.parent_id) || a.serial.localeCompare(b.serial))
+      } else {
+        childOptions.value = []
+      }
     }
   } catch (e) {
     ui.error(e)
   } finally {
-    loadingRefs.value = false
-  }
-}
-
-// Where the item's state stood when the dialog opened. A state change from the
-// edit form goes through the same faulty-note rule as the dedicated dialog, so
-// we need the original to know whether a note is owed.
-const originalState = ref<ItemState | null>(null)
-
-const stateChanged = computed(
-  () => props.mode === 'edit' && originalState.value !== null && form.state !== originalState.value,
-)
-const stateNoteRequired = computed(
-  () => stateChanged.value && (form.state === 'faulty' || originalState.value === 'faulty'),
-)
-
-function hydrate() {
-  Object.assign(form, emptyModel())
-  originalState.value = props.mode === 'edit' && props.item ? props.item.state : null
-  if (props.mode === 'edit' && props.item) {
-    const it = props.item
-    Object.assign(form, {
-      name: it.name,
-      industry: it.industry ?? null,
-      project: it.project ?? null,
-      team: it.team ?? '',
-      state: it.state,
-      description: it.description ?? '',
-      dmz: it.dmz ?? '',
-      location_id: it.location_id ?? null,
-      parent_id: it.parent_id ?? null,
-      card_type: it.card_type ?? null,
-      responsible: it.responsible ?? '',
-      lead: it.lead ?? '',
-      production_date: it.production_date ?? '',
-      version: it.version ?? '',
-      serial: it.serial ?? '',
-      quantity: it.quantity ?? 1,
-      storage_status: it.storage_status ?? null,
-      manager_ids: it.managers.map((m) => m.id),
-    })
-  } else if (props.prefill) {
-    // duplicate / from-template
-    const p = props.prefill
-    Object.assign(form, {
-      name: p.name ?? '',
-      industry: p.industry ?? null,
-      project: p.project ?? null,
-      team: p.team ?? '',
-      state: p.state ?? 'production',
-      description: p.description ?? '',
-      dmz: p.dmz ?? '',
-      location_id: p.location_id ?? null,
-      card_type: p.card_type ?? (isCard.value ? 'company' : null),
-      responsible: p.responsible ?? '',
-      lead: p.lead ?? '',
-      version: p.version ?? '',
-      quantity: p.quantity ?? 1,
-      storage_status: p.storage_status ?? (isCard.value && !props.asTemplate ? 'desiccator' : null),
-      manager_ids: p.manager_ids ?? [],
-    })
-  } else if (isCard.value) {
-    form.card_type = 'company'
-    form.storage_status = props.asTemplate ? null : 'desiccator'
+    loadingTpl.value = false
   }
 }
 
 watch(
   () => props.modelValue,
-  (v) => {
-    if (v) {
-      hydrate()
-      void loadReferences()
+  async (v) => {
+    if (!v) return
+    fieldErrors.value = {}
+    if (props.mode === 'edit' && props.item) {
+      chosenId.value = props.item.template.id
+      await loadTemplate(props.item.template.id)
+      return
     }
+    chosenId.value = props.templateId ?? null
+    try {
+      templates.value = await templatesApi.list(props.type ? { type: props.type } : {})
+    } catch (e) {
+      ui.error(e)
+    }
+    if (!chosenId.value && templates.value.length === 1) chosenId.value = templates.value[0].id
+    await loadTemplate(chosenId.value)
   },
 )
 
-const nameRules = [(v: string) => !!v?.trim() || t('itemForm.nameRequired')]
-// Both mirror server rules, so the user is told before the round-trip.
-const serialRules = [
-  (v: string) => !bySerial.value || props.asTemplate || !!v?.trim() || t('itemForm.serialRequired'),
-]
-const quantityRules = [
-  (v: number) => !byQuantity.value || Number(v) >= 1 || t('itemForm.quantityMin'),
-]
-// Mirrors the server rule, so the user is told before the round-trip instead of
-// bouncing off a 400.
-const stateNoteRules = [
-  (v: string) => !stateNoteRequired.value || !!v?.trim() || t('dlg.state.noteError'),
-]
+watch(chosenId, (id) => {
+  if (props.mode === 'create' && id !== template.value?.id) void loadTemplate(id)
+})
 
-function buildPayload(): ItemCreate | ItemUpdate {
-  const clean = (s: string) => (s.trim() === '' ? null : s.trim())
-  const base: ItemUpdate = {
-    name: form.name.trim(),
-    industry: form.industry || null,
-    project: form.project || null,
-    team: clean(form.team),
-    state: form.state,
-    description: clean(form.description),
-    dmz: clean(form.dmz),
-    location_id: form.location_id,
-    manager_ids: form.manager_ids,
+const templateChoices = computed(() =>
+  templates.value.map((tp) => ({
+    title: tp.name,
+    value: tp.id,
+    subtitle: [TYPE_LABELS[tp.type], tp.card_type ? CARD_TYPE_LABELS[tp.card_type] : null, tp.serial_prefix]
+      .filter(Boolean)
+      .join(' · '),
+  })),
+)
+
+const childChoices = computed(() =>
+  childOptions.value.map((c) => ({
+    title: `${c.name} · ${c.serial}`,
+    value: c.id,
+    subtitle: c.parent_id ? t('itemForm.willMove', { from: c.parent_label }) : c.location_name ?? '',
+  })),
+)
+
+function display(f: TemplateFieldOut): string {
+  const d = f.fixed_display
+  if (d === null || d === undefined || d === '') return '—'
+  if (Array.isArray(d)) return d.map((x) => (typeof x === 'object' && x ? (x as { name: string }).name : String(x))).join(', ')
+  if (typeof d === 'boolean') return d ? t('common.yes') : t('common.no')
+  return String(d)
+}
+
+function changedValues(): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const f of editableFields.value) {
+    const now = values[f.key]
+    if (JSON.stringify(now ?? null) !== JSON.stringify(original.value[f.key] ?? null)) out[f.key] = now
   }
-  // Only send a note when the state actually moved — an unchanged state must
-  // not attach a stray note to the item's history.
-  if (props.mode === 'edit' && stateChanged.value && form.state_note.trim()) {
-    base.state_note = form.state_note.trim()
-  }
-  if (isCard.value) {
-    base.card_type = form.card_type
-    base.responsible = clean(form.responsible)
-    base.lead = clean(form.lead)
-    base.production_date = clean(form.production_date)
-    base.version = clean(form.version)
-    // Send only the field that applies to this kind of card: a serial on a
-    // commercial card is rejected outright, and a quantity on a serialised one
-    // likewise — sending both would turn a valid form into a 400.
-    base.serial = byQuantity.value ? null : clean(form.serial)
-    base.quantity = byQuantity.value ? Number(form.quantity) || 1 : 1
-    base.storage_status = form.storage_status
-  }
-  if (props.mode === 'create') {
-    const payload: ItemCreate = { ...base, type: itemType.value } as ItemCreate
-    payload.is_template = !!props.asTemplate
-    if (showHierarchy.value) {
-      payload.parent_id = form.parent_id
-      payload.child_ids = form.child_ids
-    }
-    return payload
-  }
-  return base
+  return out
 }
 
 async function submit() {
-  const result = await formRef.value?.validate()
-  if (result && !result.valid) return
+  const res = await formRef.value?.validate()
+  if (res && !res.valid) return
+  if (!template.value) return
+  fieldErrors.value = {}
+
+  let payload: ItemCreate | ItemUpdate
+  if (props.mode === 'create') {
+    const vals: Record<string, unknown> = {}
+    for (const f of editableFields.value) vals[f.key] = values[f.key]
+    payload = {
+      template_id: template.value.id,
+      values: vals,
+      serial: serial.value.trim() || null,
+      child_ids: childIds.value,
+    }
+  } else {
+    payload = { values: changedValues() }
+    if (serial.value.trim() && serial.value.trim().toUpperCase() !== props.item?.serial) {
+      payload.serial = serial.value.trim()
+    }
+    if (!Object.keys(payload.values ?? {}).length && !payload.serial) {
+      open.value = false
+      return
+    }
+  }
+
+  if (!props.direct) {
+    emit('propose', payload, template.value)
+    open.value = false
+    return
+  }
   saving.value = true
   try {
-    emit('submit', buildPayload())
+    const saved =
+      props.mode === 'create'
+        ? await itemsApi.create(payload as ItemCreate)
+        : await itemsApi.update(props.item!.id, payload as ItemUpdate)
+    emit('saved', saved)
+    open.value = false
+  } catch (e) {
+    const list = extractErrorList(e)
+    if (list.length) {
+      fieldErrors.value = Object.fromEntries(
+        list.filter((x) => x.field).map((x) => [x.field as string, x.error]),
+      )
+    }
+    ui.error(e)
   } finally {
     saving.value = false
   }
 }
 
 const dialogTitle = computed(() => {
-  if (props.mode === 'edit') return t('itemForm.editOf', { name: props.item?.name })
-  if (props.asTemplate) return t('itemForm.newTemplate', { type: TYPE_LABELS[itemType.value] })
-  if (props.prefill) return t('itemForm.duplicateOf', { name: props.prefill.name })
-  return t('itemForm.newOf', { type: TYPE_LABELS[itemType.value] })
+  if (props.mode === 'edit') return t('itemForm.editOf', { name: `${props.item?.name} · ${props.item?.serial}` })
+  if (template.value) return t('itemForm.newFrom', { name: template.value.name })
+  return t('itemForm.newOf', { type: props.type ? TYPE_LABELS[props.type] : t('itemForm.item') })
 })
 </script>
 
 <template>
-  <v-dialog v-model="open" max-width="760" scrollable>
+  <v-dialog v-model="open" max-width="780" scrollable>
     <v-card rounded="lg">
       <v-card-title class="d-flex align-center gap-2 pa-4">
-        <v-icon
-          :icon="mode === 'create' ? (asTemplate ? 'mdi-shape-square-plus' : 'mdi-plus-circle') : 'mdi-pencil'"
-          color="primary"
-        />
+        <v-icon :icon="mode === 'create' ? 'mdi-plus-circle' : 'mdi-pencil'" color="primary" />
         <span class="text-h6">{{ dialogTitle }}</span>
       </v-card-title>
       <v-divider />
 
-      <v-card-text class="pa-4" style="max-height: 68vh">
-        <v-progress-linear v-if="loadingRefs" indeterminate color="primary" class="mb-3" />
-        <v-alert
-          v-if="asTemplate"
-          type="info"
-          variant="tonal"
-          density="compact"
-          class="mb-3"
-          icon="mdi-information-outline"
-        >
-          {{ $t('itemForm.templateNotice') }}
-        </v-alert>
-        <v-form ref="formRef" v-model="valid" @submit.prevent="submit">
-          <v-row dense>
-            <v-col cols="12" sm="6">
-              <v-text-field v-model="form.name" :label="$t('itemForm.nameReq')" :rules="nameRules" />
-            </v-col>
-            <v-col cols="12" sm="6">
-              <v-select
-                v-model="form.state"
-                :label="$t('fields.state')"
-                :items="ITEM_STATES.map((s) => ({ title: STATE_LABELS[s], value: s }))"
-              />
-            </v-col>
-            <!-- Transitions into or out of "faulty" must be explained (§5/§6/§7). -->
-            <v-col v-if="stateChanged" cols="12">
-              <v-textarea
-                v-model="form.state_note"
-                :label="stateNoteRequired ? $t('dlg.noteRequired') : $t('dlg.noteOptional')"
-                :rules="stateNoteRules"
-                rows="2"
-                auto-grow
-                density="comfortable"
-                prepend-inner-icon="mdi-swap-horizontal"
-                :hint="$t('itemForm.stateNoteHint')"
-                persistent-hint
-              />
-            </v-col>
-
-            <v-col cols="12" sm="4">
-              <v-autocomplete
-                v-model="form.industry"
-                :label="$t('fields.industry')"
-                :items="industryItems"
-                clearable
-                :no-data-text="$t('itemForm.catalogEmpty')"
-              />
-            </v-col>
-            <v-col cols="12" sm="4">
-              <v-autocomplete
-                v-model="form.project"
-                :label="$t('fields.project')"
-                :items="projectItems"
-                clearable
-                :no-data-text="$t('itemForm.catalogEmpty')"
-              />
-            </v-col>
-            <v-col cols="12" sm="4">
-              <v-text-field v-model="form.team" :label="$t('fields.team')" />
-            </v-col>
-
-            <v-col cols="12" :sm="showHierarchy && allowedParents.length ? 6 : 12">
-              <v-select
-                v-model="form.location_id"
-                :label="$t('fields.location')"
-                clearable
-                :items="locations.map((l) => ({ title: l.name, value: l.id }))"
-              />
-            </v-col>
-            <v-col v-if="showHierarchy && allowedParents.length" cols="12" sm="6">
-              <v-select
-                v-model="form.parent_id"
-                :label="$t('itemForm.parentLabel')"
-                :hint="$t('itemForm.parentHint')"
-                persistent-hint
-                clearable
-                :items="parentSelectItems"
-              />
-            </v-col>
-
-            <!-- Bidirectional linking: pull existing items in as children -->
-            <v-col v-if="showHierarchy && childTypes.length" cols="12">
-              <v-autocomplete
-                v-model="form.child_ids"
-                :label="itemType === 'setup' ? $t('itemForm.includeChildrenSetup') : $t('itemForm.includeChildrenAssembly')"
-                :hint="$t('itemForm.includeChildrenHint')"
-                persistent-hint
-                multiple
-                chips
-                closable-chips
-                :items="childSelectItems"
-              />
-            </v-col>
-
-            <v-col cols="12">
-              <v-textarea v-model="form.description" :label="$t('fields.description')" rows="2" auto-grow />
-            </v-col>
-            <v-col cols="12" sm="6">
-              <v-text-field v-model="form.dmz" :label="$t('fields.dmz')" />
-            </v-col>
-            <v-col cols="12" sm="6">
-              <v-autocomplete
-                v-model="form.manager_ids"
-                :label="$t('fields.managers')"
-                multiple
-                chips
-                closable-chips
-                :items="managers.map((m) => ({ title: m.full_name, value: m.id }))"
-              />
-            </v-col>
-
-            <template v-if="isCard">
-              <v-col cols="12">
-                <v-divider class="my-2" />
-                <div class="text-overline text-medium-emphasis">{{ $t('itemForm.cardDetails') }}</div>
-              </v-col>
-              <v-col cols="12" sm="6">
-                <v-select
-                  v-model="form.card_type"
-                  :label="$t('fields.cardType')"
-                  :items="CARD_TYPES.map((c) => ({ title: CARD_TYPE_LABELS[c], value: c }))"
-                />
-              </v-col>
-              <v-col cols="12" sm="6">
-                <v-select
-                  v-model="form.storage_status"
-                  :label="$t('fields.storageStatus')"
-                  clearable
-                  :items="STORAGE_STATUSES.map((s) => ({ title: STORAGE_LABELS[s], value: s }))"
-                />
-              </v-col>
-              <v-col cols="12" sm="6">
-                <v-text-field v-model="form.responsible" :label="$t('fields.responsible')" />
-              </v-col>
-              <v-col cols="12" sm="6">
-                <v-text-field v-model="form.lead" :label="$t('fields.lead')" />
-              </v-col>
-              <v-col cols="12">
-                <v-alert
-                  v-if="form.card_type"
-                  :type="byQuantity ? 'info' : 'success'"
-                  variant="tonal"
-                  density="compact"
-                  :icon="byQuantity ? 'mdi-numeric' : 'mdi-barcode'"
-                >
-                  {{ byQuantity ? $t('itemForm.quantityCardNotice') : $t('itemForm.serialCardNotice') }}
-                </v-alert>
-              </v-col>
-              <v-col cols="12" sm="4">
-                <v-text-field v-model="form.production_date" :label="$t('fields.productionDate')" type="date" />
-              </v-col>
-              <v-col cols="12" sm="4">
-                <v-text-field v-model="form.version" :label="$t('fields.version')" />
-              </v-col>
-              <!-- One field or the other, never both: which one is what makes a
-                   commercial card a different thing from a serialised one. -->
-              <v-col v-if="byQuantity" cols="12" sm="4">
-                <v-text-field
-                  v-model.number="form.quantity"
-                  :label="$t('itemForm.quantityReq')"
-                  :rules="quantityRules"
-                  type="number"
-                  min="1"
-                  prepend-inner-icon="mdi-numeric"
-                  :hint="$t('itemForm.quantityHint')"
-                  persistent-hint
-                />
-              </v-col>
-              <v-col v-else cols="12" sm="4">
-                <v-text-field
-                  v-model="form.serial"
-                  :label="bySerial && !asTemplate ? $t('itemForm.serialReq') : $t('fields.serial')"
-                  :rules="serialRules"
-                  :disabled="!form.card_type"
-                  prepend-inner-icon="mdi-barcode"
-                  :hint="bySerial ? $t('itemForm.serialUniqueHint') : ''"
-                  :persistent-hint="bySerial"
-                />
-              </v-col>
+      <v-card-text class="pa-4" style="max-height: 70vh">
+        <v-form ref="formRef" @submit.prevent="submit">
+          <!-- 1. the template (items are only ever made from one) -->
+          <v-autocomplete
+            v-if="mode === 'create'"
+            v-model="chosenId"
+            :label="$t('itemForm.template')"
+            :items="templateChoices"
+            item-title="title"
+            item-value="value"
+            prepend-inner-icon="mdi-shape-outline"
+            :rules="[(v: unknown) => !!v || $t('common.required')]"
+            :no-data-text="$t('itemForm.noTemplates')"
+            :hint="$t('itemForm.templateHint')"
+            persistent-hint
+            class="mb-3"
+          >
+            <template #item="{ props: itemProps, item }">
+              <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
             </template>
-          </v-row>
+          </v-autocomplete>
+
+          <v-progress-linear v-if="loadingTpl" indeterminate color="primary" class="mb-3" />
+
+          <template v-if="template">
+            <!-- the template's own (white) values -->
+            <div v-if="fixedFields.length" class="fixed-box mb-4">
+              <div class="text-overline text-medium-emphasis mb-1">{{ $t('itemForm.fromTemplate') }}</div>
+              <div class="d-flex flex-wrap gap-2">
+                <v-chip v-for="f in fixedFields" :key="f.id" size="small" variant="outlined" label>
+                  <span class="text-medium-emphasis me-1">{{ f.label }}:</span> {{ display(f) }}
+                </v-chip>
+              </div>
+            </div>
+
+            <!-- serial -->
+            <v-text-field
+              v-model="serial"
+              :label="mode === 'create' ? $t('itemForm.serialAuto') : $t('fields.serial')"
+              :placeholder="mode === 'create' ? template.next_serial ?? '' : undefined"
+              :hint="mode === 'create' ? $t('itemForm.serialAutoHint', { next: template.next_serial }) : $t('itemForm.serialEditHint')"
+              persistent-hint
+              prepend-inner-icon="mdi-barcode"
+              class="mb-3"
+              @update:model-value="(v: string) => (serial = (v || '').toUpperCase())"
+            />
+
+            <!-- the per-item and list fields -->
+            <div v-if="editableFields.length" class="text-overline text-medium-emphasis">
+              {{ $t('itemForm.itemFields') }}
+            </div>
+            <FieldInput
+              v-for="f in editableFields"
+              :key="f.id"
+              v-model="values[f.key]"
+              :field="f"
+              :template-id="template.id"
+              :files="item?.fields.find((x) => x.key === f.key)?.display as any"
+              :error-messages="fieldErrors[f.key] ? [fieldErrors[f.key]] : []"
+            />
+            <v-alert
+              v-if="!editableFields.length && mode === 'create'"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mb-3"
+            >
+              {{ $t('itemForm.nothingToFill') }}
+            </v-alert>
+
+            <!-- contents (containers) -->
+            <v-autocomplete
+              v-if="mode === 'create' && template.child_templates.length"
+              v-model="childIds"
+              :label="$t('itemForm.contents')"
+              :items="childChoices"
+              item-title="title"
+              item-value="value"
+              multiple
+              chips
+              closable-chips
+              prepend-inner-icon="mdi-file-tree-outline"
+              :hint="$t('itemForm.contentsHint', { names: template.child_templates.map((c) => c.name).join(', ') })"
+              persistent-hint
+              class="mt-2"
+            >
+              <template #item="{ props: itemProps, item }">
+                <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
+              </template>
+            </v-autocomplete>
+          </template>
         </v-form>
       </v-card-text>
 
@@ -553,12 +352,21 @@ const dialogTitle = computed(() => {
           color="primary"
           variant="flat"
           :loading="saving"
+          :disabled="!template"
           :prepend-icon="direct ? 'mdi-content-save' : 'mdi-send'"
           @click="submit"
         >
-          {{ direct ? $t('common.save') : $t('dlg.continueToProposal') }}
+          {{ direct ? (mode === 'create' ? $t('common.create') : $t('common.save')) : $t('dlg.continueToProposal') }}
         </v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
 </template>
+
+<style scoped>
+.fixed-box {
+  border: 1px dashed rgba(var(--v-border-color), 0.5);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+</style>

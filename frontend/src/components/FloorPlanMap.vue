@@ -261,6 +261,15 @@ function onMapClick(evt: MouseEvent) {
             opacity="0.25"
             class="pulse"
           />
+          <circle
+            v-if="loc.is_desiccator"
+            r="3.3"
+            fill="none"
+            stroke="#26c6da"
+            stroke-width="0.5"
+            stroke-dasharray="0.8 0.5"
+            class="desiccator-ring"
+          />
           <circle r="2.4" :fill="markerColor(loc)" stroke="#ffffff" stroke-width="0.5" />
           <text v-if="loc.item_count" y="0.9" class="count">{{ loc.item_count }}</text>
           <text y="6.2" class="marker-label">{{ loc.name }}</text>
@@ -369,6 +378,9 @@ function onMapClick(evt: MouseEvent) {
 }
 .marker:hover circle {
   r: 2.9;
+}
+.marker:hover .desiccator-ring {
+  r: 3.8;
 }
 .pulse {
   animation: pulse 1.8s ease-in-out infinite;

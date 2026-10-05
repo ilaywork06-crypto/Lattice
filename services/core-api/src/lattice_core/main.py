@@ -8,11 +8,13 @@ from fastapi.responses import JSONResponse
 from lattice_shared.logging import configure_logging
 
 from lattice_core.config import get_settings
+from lattice_core.errors import DomainError
 from lattice_core.routers import (
     audit,
     auth,
     catalog,
     change_requests,
+    documents,
     graph,
     importexport,
     inventory,
@@ -20,10 +22,10 @@ from lattice_core.routers import (
     locations,
     map_buildings,
     search,
+    templates,
     users,
 )
 from lattice_core.seed import init_db
-from lattice_core.services.items import DomainError
 
 logger = configure_logging("lattice_core")
 settings = get_settings()
@@ -40,7 +42,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Lattice — Core API",
     version="0.1.0",
-    description="Hierarchical hardware asset tracking: setups, assemblies and cards.",
+    description=(
+        "Hierarchical hardware asset tracking: setups, assemblies and cards, each "
+        "created from a template."
+    ),
     lifespan=lifespan,
 )
 
@@ -53,7 +58,11 @@ async def domain_error_handler(_: Request, exc: DomainError):
     like "'X' is not a known project" into a bare 500. Handling it centrally
     means a new route cannot regress this again.
     """
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+    content: dict = {"detail": str(exc)}
+    if exc.errors:
+        # Structured per-field / per-cell problems (forms, Excel import).
+        content["errors"] = exc.errors
+    return JSONResponse(status_code=400, content=content)
 
 
 app.add_middleware(
@@ -68,7 +77,9 @@ app.add_middleware(
 for r in (
     auth.router,
     users.router,
+    templates.router,
     items.router,
+    documents.router,
     change_requests.router,
     inventory.router,
     locations.router,

@@ -86,4 +86,24 @@ export function extractError(error: unknown): string {
   return 'An unexpected error occurred'
 }
 
+/** Structured problems a 400 may carry next to `detail` (per form field, or
+ *  per spreadsheet cell on an import). */
+export interface ApiErrorEntry {
+  field?: string
+  label?: string
+  sheet?: string
+  cell?: string | null
+  row?: number | null
+  column?: string | null
+  error: string
+}
+
+export function extractErrorList(error: unknown): ApiErrorEntry[] {
+  if (axios.isAxiosError(error)) {
+    const errors = (error.response?.data as { errors?: unknown } | undefined)?.errors
+    if (Array.isArray(errors)) return errors as ApiErrorEntry[]
+  }
+  return []
+}
+
 export { CORE_API_URL, NOTIFICATION_API_URL }

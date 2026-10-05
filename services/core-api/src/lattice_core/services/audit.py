@@ -1,8 +1,8 @@
-"""Audit-log helper (requirement §10 — per-item change history)."""
+"""Audit-log helper (requirement §10 — change history)."""
 
 from sqlalchemy.orm import Session
 
-from lattice_core.models import AuditLog, Item, User
+from lattice_core.models import AuditLog, Item, ItemTemplate, User
 
 
 def record_audit(
@@ -12,11 +12,21 @@ def record_audit(
     summary: str,
     user: User | None,
     item: Item | None = None,
+    template: ItemTemplate | None = None,
     details: dict | None = None,
 ) -> AuditLog:
+    if template is None and item is not None:
+        template = item.template
+    if item is not None:
+        name = item.label
+    elif template is not None:
+        name = template.name
+    else:
+        name = None
     entry = AuditLog(
         item_id=item.id if item else None,
-        item_name=item.name if item else None,
+        template_id=template.id if template else None,
+        item_name=name,
         action=action,
         summary=summary,
         details=details or {},

@@ -29,3 +29,6 @@ dist/
 *.log
 pgdata/
 *.sqlite3
+
+# Uploaded documents (local dev)
+uploads/

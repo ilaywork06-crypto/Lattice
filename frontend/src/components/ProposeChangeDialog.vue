@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { changeRequestsApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 import { CHANGE_ACTION_ICONS, CHANGE_ACTION_LABELS } from '@/constants'
 import type { ProposeContext } from '@/lib/propose'
 
@@ -17,6 +18,7 @@ const emit = defineEmits<{
 }>()
 
 const ui = useUiStore()
+const auth = useAuthStore()
 const { t } = useI18n({ useScope: 'global' })
 
 const open = computed({
@@ -24,7 +26,6 @@ const open = computed({
   set: (v) => emit('update:modelValue', v),
 })
 
-const description = ref('')
 const reason = ref('')
 const formRef = ref()
 const submitting = ref(false)
@@ -34,10 +35,7 @@ const required = [(v: string) => !!v?.trim() || t('common.required')]
 watch(
   () => props.modelValue,
   (v) => {
-    if (v) {
-      description.value = ''
-      reason.value = ''
-    }
+    if (v) reason.value = props.context?.reason?.trim() ?? ''
   },
 )
 
@@ -57,9 +55,9 @@ async function submit() {
     await changeRequestsApi.create({
       action: props.context.action,
       item_id: props.context.itemId ?? null,
+      template_id: props.context.templateId ?? null,
       item_type: props.context.itemType ?? null,
       payload: props.context.payload,
-      description: description.value.trim(),
       reason: reason.value.trim(),
     })
     ui.success(t('propose.submittedToast'))
@@ -92,7 +90,7 @@ async function submit() {
             </span>
           </div>
           <div class="text-caption mt-1">
-            {{ $t('propose.editorNote') }}
+            {{ auth.isViewer ? $t('propose.viewerNote') : $t('propose.editorNote') }}
           </div>
         </v-alert>
 
@@ -106,13 +104,6 @@ async function submit() {
         </v-table>
 
         <v-form ref="formRef" @submit.prevent="submit">
-          <v-text-field
-            v-model="description"
-            :label="$t('propose.descLabel')"
-            :placeholder="$t('propose.descPlaceholder')"
-            :rules="required"
-            class="mb-1"
-          />
           <v-textarea
             v-model="reason"
             :label="$t('propose.reasonLabel')"
@@ -120,6 +111,9 @@ async function submit() {
             rows="3"
             auto-grow
             :rules="required"
+            :hint="context.reason ? $t('propose.reasonPrefilled') : undefined"
+            persistent-hint
+            autofocus
           />
         </v-form>
       </v-card-text>

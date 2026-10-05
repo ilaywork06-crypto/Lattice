@@ -172,20 +172,45 @@ function toggleDrawer() {
       </v-list>
     </v-menu>
 
-    <!-- Theme toggle -->
-    <v-tooltip
-      :text="themeStore.isDark ? $t('appbar.switchToLight') : $t('appbar.switchToDark')"
-      location="bottom"
-    >
+    <!-- Theme picker: the default light/dark pair plus pastel palettes -->
+    <v-menu location="bottom end" :close-on-content-click="false">
       <template #activator="{ props }">
-        <v-btn
-          v-bind="props"
-          :icon="themeStore.isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'"
-          variant="text"
-          @click="themeStore.toggle()"
-        />
+        <v-tooltip :text="$t('appbar.theme')" location="bottom">
+          <template #activator="{ props: tip }">
+            <v-btn v-bind="{ ...props, ...tip }" variant="text" icon="mdi-palette-outline" />
+          </template>
+        </v-tooltip>
       </template>
-    </v-tooltip>
+      <v-card min-width="280" rounded="lg">
+        <v-card-title class="text-subtitle-2 pb-0">{{ $t('appbar.theme') }}</v-card-title>
+        <v-card-text class="pt-2">
+          <div class="theme-grid">
+            <button
+              v-for="th in themeStore.available"
+              :key="th.name"
+              type="button"
+              class="theme-option"
+              :class="{ active: themeStore.current === th.name }"
+              :aria-label="$t('themes.' + th.name)"
+              @click="themeStore.set(th.name)"
+            >
+              <span class="theme-swatch" :style="{ background: th.swatch[0] }">
+                <span :style="{ background: th.swatch[1] }" />
+                <span :style="{ background: th.swatch[2] }" />
+              </span>
+              <span class="text-caption">{{ $t('themes.' + th.name) }}</span>
+              <v-icon
+                v-if="themeStore.current === th.name"
+                icon="mdi-check-circle"
+                size="16"
+                color="primary"
+                class="theme-check"
+              />
+            </button>
+          </div>
+        </v-card-text>
+      </v-card>
+    </v-menu>
 
     <!-- Notification bell -->
     <v-tooltip :text="$t('appbar.notifications')" location="bottom">
@@ -265,6 +290,49 @@ function toggleDrawer() {
 </template>
 
 <style scoped>
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.theme-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+.theme-option.active {
+  border-color: rgb(var(--v-theme-primary));
+  box-shadow: 0 0 0 1px rgb(var(--v-theme-primary)) inset;
+}
+.theme-swatch {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 30px;
+  height: 22px;
+  padding: 3px;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.35) inset;
+  flex: none;
+}
+.theme-swatch span {
+  flex: 1;
+  height: 10px;
+  border-radius: 3px;
+}
+.theme-check {
+  position: absolute;
+  top: 4px;
+  inset-inline-end: 4px;
+}
 .search-activator {
   min-width: 220px;
   justify-content: flex-start;
