@@ -1,6 +1,6 @@
 # Lattice — רכיב
 
-**Hierarchical hardware asset tracking for setups (סטאפים), assemblies (מכלולים) and cards (כרטיסים).**
+**Hierarchical hardware asset tracking for setups (סטאפים), assemblies (מכלולים) and cards (כרטיסים) — every item made from a template.**
 
 Lattice doesn't just list parts — it manages the *relationships* between them. It
 knows, at any moment, which card is assembled inside which assembly inside which
@@ -21,7 +21,7 @@ flowchart LR
         FE["Vue 3 + Vuetify SPA<br/>(dark/light, graph, map)"]
     end
     subgraph Core["core-api (FastAPI :8000)"]
-        C["Items · Relationships · State machine<br/>Change-requests · Audit · Inventory<br/>Import/Export · Auth (JWT/RBAC)"]
+        C["Templates · Items · Serials · Relationships<br/>State machine · Change-requests · Audit<br/>Inventory · Uploads · Import/Export · Auth (JWT/RBAC)"]
     end
     subgraph Notif["notification-service (FastAPI :8001)"]
         N["Event consumer<br/>In-app notifications + email"]
@@ -48,7 +48,8 @@ bus) lives in the `lattice-shared` workspace package.
 
 ### Tech
 - **Backend:** Python 3.12+, FastAPI, SQLAlchemy 2.0, Pydantic v2, managed as a **uv workspace (monorepo)**.
-- **Frontend:** Vue 3 (`<script setup>`, TypeScript), Vuetify 3, Pinia, Vue Router, vis-network (graph), custom SVG floor-plan (map).
+- **Frontend:** Vue 3 (`<script setup>`, TypeScript), Vuetify 3 (light/dark + 8 pastel themes), Pinia, Vue Router, vis-network (graphs), custom SVG floor-plan (map with zoom/pan).
+- **Database:** schema owned by **Alembic** migrations (applied on start-up); a pre-migration database is converted once (see `legacy_upgrade.py`).
 - **Infra:** PostgreSQL ×2, Redis (pub/sub), MailHog (email capture), Docker Compose.
 - **Config:** `.env` / dotenv everywhere (`.env.example` provided).
 
@@ -85,6 +86,18 @@ the password should be changed at once. Everything after that is created in the
 app — **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) walks through it in order**,
 from the first project value to the first low-stock alert.
 
+### Upgrading an existing installation
+
+On start-up the API brings the database to the latest Alembic revision. A
+database created by an earlier, pre-migration release is detected and
+converted **once, in a single transaction** (nothing changes if any step
+fails): each distinct item name becomes a template, items keep their ids and
+get serials in the new `C/A/S-XXX-###` scheme (the old serial is kept in a
+*Legacy serial* field), states and card types are mapped to the new values,
+locations holding desiccator cards join the desiccator, and pending change
+requests are closed with a note asking for resubmission (their payloads
+describe the old format). Back up the database first, as with any upgrade.
+
 The sign-in screen can offer accounts as one-click shortcuts. That list is
 **data, not code**: a manager publishes each account (and optionally its
 password) under *Users & Permissions*. A fresh system publishes none, so the
@@ -113,29 +126,45 @@ npm run dev        # http://localhost:5173
 
 ### Tests
 ```bash
-uv run pytest services/core-api/tests -q            # core API (65 tests)
-uv run pytest services/notification-service/tests -q # notifications (9 tests)
-uv run ruff check services packages                  # lint
+uv run pytest services/core-api/tests -q             # core API (SQLite)
+LATTICE_TEST_DATABASE_URL=postgresql+psycopg://user@host/emptydb \
+  uv run pytest services/core-api/tests -q             # …or against an empty Postgres
+uv run pytest services/notification-service/tests -q  # notifications
+uv run ruff check services packages                   # lint
+(cd frontend && npm run typecheck && npm run build)   # frontend
+```
+
+### Database migrations
+```bash
+# after changing models.py:
+uv run alembic -c services/core-api/alembic.ini revision --autogenerate -m "what changed"
+uv run alembic -c services/core-api/alembic.ini upgrade head   # the API also does this on start-up
 ```
 
 ---
 
 ## Requirements → implementation map
 
-| # | Requirement | Where |
-|---|-------------|-------|
-| §2 | Item types: setups / assemblies / cards; commercial / company / unique cards; "linking" vs "linked" | `models.py` (`Item`, `ItemType`, `CardType`, `CardTracking`), self-referential `parent_id`; unique names + per-card-type rules in `services/items.py` |
-| §3 | Link card→assembly/setup, assembly→setup; **moving a container cascades location to its contents**, and a linked item cannot be moved on its own | `services/items.py: move_item` (downward cascade + linked-item guard), `link_item`/`validate_link` (allowed pairs) |
-| §4 | Bidirectional navigation between linked items | `ItemOut.parent` + `ItemOut.children` (clickable both ways in the UI) |
-| §5 | Setups: name, industry, project, location, team, **state + history**, description, DAMATZ (דמ"צ), linked items, extra non-card items (part no. / serial / signed-by) | `Item`, `ExtraItem`, `StateHistory` |
-| §6 | Assemblies: same documentation + shows parent setup; **contents editable after creation** | `Item` (+ `parent` link), `services/items.py: set_children`, `PUT /items/{id}/children` |
-| §7 | Cards: responsible, lead, production date, version, location, state+history, linked setups/assemblies, documents; count **in-use vs desiccator** | `Item` card fields, `Document`, `StorageStatus`, `/inventory/summary` (all figures are unit sums) |
-| §8 | Permissions: viewer / editor / manager; managers also choose **which accounts (and whether their passwords) appear as shortcuts on the sign-in screen** | `models.UserRole`, `deps.py` role guards, `/users`, `User.login_hint_*`, `GET /auth/login-hints` |
-| §9 | Change-approval workflow: editor proposes (with description + reason) → managers notified (email + in-app) → approve → apply. Items can be **linked to specific managers** for targeted routing | `models.ChangeRequest`, `services/change_requests.py`, `item_managers` table |
-| §10 | Change log per item; manager log of changes on their linked items over day/week/month | `models.AuditLog`, `/audit`, `/audit/my-items?period=` |
-| §11 | Excel import (bulk) & export | `services/importexport.py`, `/data/{template,import,export}` |
-| §12 | Desiccator stock: **an explicit quantity per commercial card**, breakdown by version & production date, per-serial for serialised cards; **minimum-quantity alerts** listing the short components (email + in-app to manager & editor) | `services/inventory.py`, `Item.quantity`, `StockThreshold`, `/inventory/{cards,desiccator,thresholds,low-stock}` |
-| Extras | Hierarchy **graph** page, **editable floor-plan map** (draw/move/resize buildings behind the location markers), **dark/light** mode | `/graph`, `/locations` (x,y), `/map/buildings`, frontend |
+| Requirement | Where |
+|-------------|-------|
+| Item types: setups / assemblies / cards; card types copied / house / white / factory / commercial | `models.ItemType`, `models.CardType`; one `items` table, self-referential `parent_id` |
+| **Every item is created from a template**; one template per named card / assembly / setup | `models.ItemTemplate`, `services/templates.py`, `services/items.py:create_item` (`template_id` required) |
+| Template fields: fixed (white) / list (white ▾, first = default) / per item (grey), required (★), formats `XX-#####`, all field types | `models.TemplateField` (`FieldType`, `FieldMode`), `services/fields.py` |
+| Template edits apply to every item made from it (e.g. new manager → all items) | `services/templates.py:update_template` (read-through + propagation) |
+| Which templates may sit inside which (cards in assemblies, assemblies/cards in setups) | `template_children`; enforced by `services/items.py:validate_link` |
+| Serials `C/A/S-XXX-###`: prefix from the template, number = highest + 1, editable, no duplicates | `services/serials.py`; unique index on `items.serial` |
+| States built / ok / faulty / destroyed (built by default) | `models.ItemState`, `services/items.py:change_state` |
+| Team catalog; two-way many-to-many links between team, industry and project | `CatalogCategory.team`, `models.CatalogLink`, `services/catalog.py`, `PUT /catalog/{id}/links` |
+| Viewers may propose a location change; editors propose item and template changes | `services/change_requests.py` (`_ALLOWED_ACTIONS`) |
+| Lists grouped by template with per-status counts; a template's units with state, location, parent, serial | `GET /templates` (`counts`), `GET /items?template_id=`, `TemplateGroupsView.vue` |
+| Real document uploads | `models.Document` (`storage_key`), `services/files.py`, `/uploads`, `/documents/{id}/download` |
+| Desiccator = a set of locations (Catalog → Desiccator); stock thresholds on built/ok cards in it | `Location.is_desiccator`, `PUT /locations/desiccator`, `services/inventory.py` |
+| Hierarchy graph by templates, all trees of a template, one item's tree | `routers/graph.py`, `HierarchyGraph.vue`, `GraphPage.vue`, item page → Hierarchy |
+| Map 100 × 100 with zoom, pan and label size | `FloorPlanMap.vue` |
+| Audit: my items only, 6 months / year / all time, Excel export | `routers/audit.py` |
+| Notifications: all / unread / read | notification-service `GET /notifications?status=` |
+| Excel import per template (headers = creation fields), all-or-nothing with per-cell errors; export | `services/importexport.py` |
+| Change-approval workflow, audit log, managers per item, low-stock alerts, dark/light/pastel themes, RTL Hebrew | as before (`change_requests.py`, `audit.py`, `inventory.py`, `plugins/themes.ts`, `i18n/`) |
 
 The full HTTP + event contract is in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
@@ -154,8 +183,10 @@ lattice/
 ├── packages/
 │   └── lattice-shared/           # shared config + typed Redis event bus
 ├── services/
-│   ├── core-api/               # FastAPI: domain, auth, workflow, inventory, audit
+│   ├── core-api/               # FastAPI: templates, items, workflow, inventory, audit
+│   │   ├── alembic.ini
 │   │   ├── src/lattice_core/{models,schemas,services,routers,…}.py
+│   │   ├── src/lattice_core/migrations/   # Alembic revisions (applied on start-up)
 │   │   └── tests/
 │   └── notification-service/   # FastAPI: event consumer → in-app + email
 │       ├── src/lattice_notifications/
@@ -167,35 +198,37 @@ lattice/
 
 ## Design notes / decisions
 
-- **One `items` table, three types.** Setups, assemblies and cards share most
-  documentation and, crucially, a single self-referential tree (`parent_id`).
-  That makes "which card is in which setup" a graph walk, and makes the
-  cascade-on-move rule a single downward traversal.
-- **Location cascade is strictly downward.** Moving an item updates it and all
-  descendants; it never touches ancestors — exactly matching §3. The corollary
-  is enforced too: a *linked* item has no location of its own (it is inside its
-  parent), so moving it is refused with an error naming the parent to move.
+- **Templates are the model; items are units.** A template owns the name, the
+  card type, the serial prefix and the field list; items reference it by FK
+  (`RESTRICT`, so a template with items can't vanish). Items of one template
+  share its name and differ by serial — which is what makes the grouped list
+  pages and per-template stock possible.
+- **Fixed values are read through, not copied.** A white field's value lives on
+  the template, so editing it changes every item at once. Values other tables
+  depend on — catalog values, users, location, parent, state, quantity — are
+  real foreign-key columns on `items` (or `item_managers`), and a template edit
+  rewrites them in the same transaction. Free-form values go to
+  `item_field_values` (one row per item × field, unique).
+- **Integrity in the database, explanations in the service.** Unique serials,
+  unique (type, name) and (type, prefix) per template, ordered pairs for
+  catalog links, `quantity ≥ 1`, card type only on card templates — all are
+  constraints; the services check first so the user gets a sentence, not an
+  integrity error.
+- **Nothing derived is stored.** Storage status (assembled / in use /
+  desiccator) follows from the parent and the location's `is_desiccator`, so
+  redefining the desiccator instantly reclassifies every card.
+- **Enums are checked VARCHARs.** Native PostgreSQL enums can't drop or rename a
+  value inside a migration; a named CHECK constraint gives the same integrity
+  and evolves with one statement.
+- **Migrations, not `create_all`.** Alembic owns the schema and the API upgrades
+  on start-up. Databases from before migrations are converted once by
+  `legacy_upgrade.py`, in one transaction (roll back on any failure).
+- **Location cascade is strictly downward**, and a linked item has no location
+  of its own (move the container, or unlink first).
+- **Mutations live in one place** (`services/*.py`). Managers call them
+  directly; approved change requests call the same functions.
 - **Ships empty.** `seed.py` creates the bootstrap admin and nothing else; the
-  world the tests read is built by their own fixtures. Nothing in shipped code
-  invents rows a customer would have to delete.
-- **Two kinds of card, counted two ways.** A *commercial* card is a quantity of
-  interchangeable parts on a single row (`Item.quantity`, no serial); a
-  *company*/*unique* card is one row per physical board with a mandatory,
-  globally unique serial. Every stock figure is `SUM(quantity)` — serialised
-  cards pin it to 1, so one formula serves both — and each inventory group
-  reports *how* it was counted (`tracking`, `records`, `serials[]`) so a number
-  can always be explained. Bulk Excel import handles large batches of either.
-- **A name identifies one thing.** Live setups, assemblies and commercial cards
-  can't share a name (trimmed, case-insensitive). Serialised cards are the
-  deliberate exception: twenty boards off one run are twenty rows of the same
-  model, and the serial is what tells them apart.
-- **Mutations live in one place** (`services/items.py`). Managers call them
-  directly; editors' change-requests call the *same* functions on approval — so
-  the rules (link validity, fault-note requirement, cascade, audit) can't drift.
-- **Notifications are best-effort and decoupled.** core-api publishes to Redis
-  and never blocks on it; the consumer is resilient (reconnect w/ backoff, email
-  failures swallowed) so a mail outage never breaks the API.
-- **Alerts carry data, not prose.** A low-stock alert is one digest per
-  recipient listing exactly the components they own, as a structured
-  `payload.components[]` the UI renders as a table (the text body mirrors it for
-  email) — rather than one sentence-shaped email per threshold.
+  world the tests read is built by their own fixtures.
+- **Notifications are best-effort and decoupled** (Redis pub/sub; mail outages
+  never break the API). Low-stock alerts are one digest per recipient with a
+  structured `payload.components[]`.

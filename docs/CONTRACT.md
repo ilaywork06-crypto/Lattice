@@ -19,147 +19,189 @@ OAuth2 password flow, JWT bearer tokens. Both services validate the **same** JWT
   account shortcuts → `[{ full_name, email, role, password }]`.
   Returns only *active* accounts a manager marked `login_hint_visible`, and
   `password` only where a manager explicitly published one (`null` otherwise —
-  the shortcut then fills the email alone). Nothing is exposed by default: new
-  accounts start hidden — a fresh system publishes none, so the login page shows
-  no shortcuts at all until a manager adds one.
+  the shortcut then fills the email alone). Nothing is exposed by default.
 
 Send `Authorization: Bearer <token>` on every other request.
 
 ### Roles (increasing power)
-- `viewer` — read only.
-- `editor` — read + submit change-requests + import + create locations/thresholds.
-- `manager` — everything + direct mutations + approvals + user management.
+- `viewer` — read; may **propose a location change** (`move` change request) and nothing else.
+- `editor` — read + propose any change (items *and* templates) + create locations/thresholds + stage uploads.
+- `manager` — everything + direct mutations + approvals + templates + catalog/desiccator + import + users.
 
-**Important workflow rule (§9):** direct item mutations (`POST/PATCH/DELETE
-/items`, `/items/{id}/move|link|unlink|state`) require **manager**. Editors do
-not mutate directly — they call `POST /change-requests`. The frontend must
-branch on role: managers act directly; editors open a change-request dialog.
+**Workflow rule (§9):** direct mutations of items and templates require
+**manager**. Everyone else calls `POST /change-requests`; on approval the server
+runs the very same service functions a manager would.
 
 ## Enums
 - `ItemType`: `setup | assembly | card`
-- `CardType`: `commercial | company | unique`
-- `CardTracking`: `quantity | serial` — derived from `CardType` (`commercial` → `quantity`, the rest → `serial`), never sent by the client
-- `ItemState`: `production | built | used | working | faulty`
-- `StorageStatus`: `assembled | in_use | desiccator`
+- `CardType`: `copied | house | white | factory | commercial` (formerly `unique` → `copied`, `company` → `house`)
+- `CardTracking`: `quantity | serial` — derived from `CardType` (`commercial` → `quantity`, the rest → `serial`)
+- `ItemState`: `built | ok | faulty | destroyed` — every new item is `built` unless its template's status field says otherwise
+- `StorageStatus`: `assembled | in_use | desiccator` — **derived**, never stored (see Inventory)
 - `UserRole`: `viewer | editor | manager`
 - `ChangeStatus`: `pending | approved | rejected`
-- `ChangeAction`: `create | update | delete | move | link | unlink | state_change`
+- `ChangeAction`: `create | update | delete | move | link | unlink | state_change | template_create | template_update`
+- `CatalogCategory`: `project | industry | team`
+- `FieldMode`: `fixed | choice | item`
+- `FieldType`: `text | description | string | serial_string | link | enum | letter | date | integer | decimal | boolean | files | industry | project | team | managers | responsible | location | parent | status | quantity`
+
+## Templates — every item is made from one
+
+A template is the blueprint of one *kind* of thing: one named card, one
+assembly, one setup. It owns the name, the card type, the three-letter serial
+prefix, the fields, and (for containers) which templates may sit inside it.
+Items of one template share its name and are told apart by their serial.
+
+### Fields
+Each field has a `label`, a `field_type`, a `mode`, a `required` flag, a
+`config` and (for fixed fields) a `fixed_value`.
+
+| `mode` | UI colour | who sets the value |
+|---|---|---|
+| `fixed` | white | the template — one value shared by every item, read through the template, so editing it changes every item |
+| `choice` | white with ▾ | the template defines `config.options`; each item picks one (the first is the default) |
+| `item` | grey | filled in when an item is created |
+
+`required` (★) means: a fixed field must have its value; a list must be
+non-empty; a per-item field must be filled when an item is created.
+
+Per-type rules:
+- `description`: text with at least `config.min_length` (default 8) non-blank characters.
+- `string` / `serial_string`: optional `config.pattern`, e.g. `"XX-#####"` — `#` is a digit the user types, every other character is filled in automatically. Both `"12345"` and `"XX-12345"` are accepted; the stored value is the full form.
+- `enum`: `config.options` is the list of strings.
+- `letter`: `A`–`Z`. `date`: `YYYY-MM-DD`. `link`: a URL with a scheme. `integer`, `decimal`, `boolean`, `quantity` (≥ 1).
+- **System types** — `industry`, `project`, `team` (catalog ids), `managers` (manager user ids; links every item to those managers), `responsible` (any user id), `location`, `parent` (item id), `status`, `quantity` — are stored in real columns on the item; **at most one of each per template**.
+- `location`, `parent`, `status`, `quantity` describe each unit, so they can be `item` or `choice` but never `fixed`. `parent` is never `choice`.
+- `quantity` only on **commercial** card templates; setups have no `parent`.
+- `files`: values are document ids (see Documents). A fixed files field holds files uploaded to the template.
+- A field's `field_type` cannot change once it exists (remove it and add a new one).
+
+### Endpoints
+- `GET /templates?type=&card_type=&search=` (viewer+) → `TemplateSummary[]`
+  `TemplateSummary = { id, type, name, card_type, serial_prefix, tracking, description, counts{built,ok,faulty,total,destroyed}, child_template_ids[], parent_template_ids[], field_count, updated_at }`
+  `counts` are units per state (sums of `quantity`); `total` **excludes destroyed**.
+- `GET /templates/{id}` → `TemplateOut` = summary + `fields: TemplateFieldOut[]`, `child_templates[]`, `parent_templates[]`, `next_serial`, `created_at`.
+  `TemplateFieldOut = { id, key, label, field_type, mode, required, position, config, fixed_value, fixed_display, options_display[], files[] }` (`*_display` are readable names for stored ids).
+- `POST /templates` (manager) `TemplateCreate = { type, name, card_type?, serial_prefix, description?, fields: TemplateFieldIn[], child_template_ids[] }` → `TemplateOut`.
+  `TemplateFieldIn = { id?, key?, label, field_type, mode, required, config, fixed_value? }`.
+- `PATCH /templates/{id}` (manager) — any of the above except `type`. `fields`, when sent, is the **complete** list after the edit (`id` marks an existing field; missing ones are removed). Changes **propagate**: a fixed system value (e.g. managers) is rewritten on every item; switching a field from fixed to per-item copies the old value into each item.
+- `DELETE /templates/{id}` (manager) → 204; 400 while any item was made from it.
+- `POST /templates/{id}/fields/{field_id}/files` (manager) multipart `file` → `DocumentOut` (fixed files fields).
+- `DELETE /templates/{id}/files/{doc_id}` (manager) → 204.
+
+Rules: names are unique per type (case-insensitive); `serial_prefix` is three
+Latin letters, unique per type; a card template needs a `card_type`, other
+types must not have one; children: a setup may contain assembly and card
+templates, an assembly card templates (each pair at most once); a template
+can't be removed from a container's list while items of it sit inside items of
+that container.
+
+## Serials
+
+`C-XXX-###` (card), `A-XXX-###` (assembly), `S-XXX-###` (setup). `XXX` is the
+template's prefix; `###` is issued automatically as **one above the highest
+number already used under that type + prefix** (grows past 999). A serial can
+be set or edited by hand: it must keep the type letter and the template's
+prefix (or the prefix the item was issued under) and is **unique system-wide**
+(unique index; 400 with an explanation on a clash).
 
 ## Core API endpoints
 
 ### Items
-- `GET /items` → `ItemListOut[]`. Query: `type,state,card_type,storage_status,project,industry,location_id,unassigned(bool),templates(bool),search,limit,offset`.
-  `templates=true` returns only templates; default (`false`) excludes them (they never mix with live items).
-  `ItemListOut = { id, type, name, industry, project, team, state, card_type, version, serial, quantity, storage_status, parent_id, location_id, location_name, children_count, is_template, manager_names[], updated_at }`
-- `GET /items/{id}` → `ItemOut` (full: `is_template`, `location`, `parent` (brief), `children` (brief[]), `managers` (brief[]), `state_history[]`, `documents[]`, `extra_items[]`).
-- `POST /items` (manager) body `ItemCreate` → `ItemOut`.
-- `PATCH /items/{id}` (manager) body `ItemUpdate` → `ItemOut`.
-- `DELETE /items/{id}` (manager) → 204.
-- `POST /items/bulk` (manager) `{ action: move|state_change|delete|link|unlink, item_ids[req], location_id?, parent_id?, state?, note? }` → `{ processed, failed, errors[] }`. **Atomic**: the whole batch commits or rolls back together.
-- `POST /items/{id}/move` (manager) `{ location_id, note? }` → `ItemOut` (cascades to descendants).
-  **A linked item cannot be moved** (400): being linked means it physically sits inside its parent, so it has no location of its own. Move the parent — the contents follow — or unlink it first. The same rule applies to `location_id` on `PATCH /items/{id}` and to a bulk move (which rolls the whole batch back).
-- `POST /items/{id}/link` (manager) `{ parent_id }` → `ItemOut` (cascades the parent's location through the whole adopted subtree).
-- `PUT /items/{id}/children` (manager) `{ child_ids[] }` → `ItemOut`. Replaces the container's contents — the list is the **end state**, not a delta. Removed members are unlinked (never deleted), added ones are linked (inheriting the location). Validated as a whole: one illegal member rejects the edit and leaves the contents untouched.
-- `POST /items/{id}/unlink` (manager) → `ItemOut`.
-- `POST /items/{id}/state` (manager) `{ state, note? }` → `ItemOut`. Note is **required** when moving into/out of `faulty` (else 400).
-- `POST /items/{id}/documents` (manager) `{ name, url?, doc_type? }` → `DocumentOut`.
-- `DELETE /items/{id}/documents/{doc_id}` (manager) → 204.
-- `POST /items/{id}/extras` (manager, setups only) `{ name, company_part_number?, serial?, signed_by? }` → `ExtraItemOut`.
-- `DELETE /items/{id}/extras/{extra_id}` (manager) → 204.
+- `GET /items` → `ItemListOut[]`. Query: `type, template_id, state, card_type, storage_status, location_id, parent_id, unassigned(bool), include_destroyed(bool=true), child_of_template, parent_of_template, search, limit(≤5000), offset`.
+  `child_of_template=T`: items whose template may be placed inside template T; `parent_of_template=T`: items whose template may contain T.
+  `ItemListOut = { id, type, template_id, name, serial, state, card_type, quantity, storage_status, parent_id, parent_label, location_id, location_name, industry, project, team, children_count, manager_names[], updated_at }`
+- `GET /items/{id}` → `ItemOut = { id, type, template{brief}, name, serial, state, card_type, tracking, quantity, storage_status, parent_id, location_id, location, parent{brief}, children[brief], industry, project, team ({id,value}), responsible, managers[], fields: ItemFieldOut[], state_history[], documents[], extra_items[], child_templates[], created_at, updated_at }`
+  `ItemFieldOut = { field_id, key, label, field_type, mode, required, config, value, display, missing }` — every field of the template, with the effective value (`fixed` ones from the template).
+- `POST /items` (manager) `ItemCreate = { template_id(req), values{key: value}, serial?, child_ids[] }` → `ItemOut`.
+  `values` holds the template's `item`/`choice` fields by key (a `choice` field left out gets its first value). Sending a `fixed` field, an unknown key, an invalid value or leaving a required field empty → 400 with `errors: [{field, label, error}]` listing **every** problem. A new card with no location goes to the first desiccator location.
+- `PATCH /items/{id}` (manager) `ItemUpdate = { values{key: value}, serial? }` → `ItemOut`. Only the fields being changed. `location`, `parent` and `status` fields are changed with their own actions (400 otherwise); fixed fields are changed on the template.
+- `DELETE /items/{id}` (manager) → 204 (its contents are unlinked, not deleted).
+- `POST /items/bulk` (manager) `{ action: move|state_change|delete|link|unlink, item_ids[req], location_id?, parent_id?, state?, note? }` → `{ processed, failed, errors[] }`. **Atomic**.
+- `POST /items/{id}/move` (manager) `{ location_id, note? }` → `ItemOut` (cascades to descendants). **A linked item cannot be moved** (400): move its container, or unlink it first.
+- `POST /items/{id}/link` (manager) `{ parent_id }` → `ItemOut`. Allowed only if the parent's template lists the child's template; the child's subtree takes the parent's location.
+- `PUT /items/{id}/children` (manager) `{ child_ids[] }` → `ItemOut` — the container's contents, as the end state.
+- `POST /items/{id}/unlink` (manager) `{ location_id? }` → `ItemOut`. It stays at the container's location unless `location_id` says where it now is.
+- `POST /items/{id}/state` (manager) `{ state, note? }` → `ItemOut`. Note **required** into/out of `faulty`.
+- `POST /items/{id}/documents` (manager) multipart: `file` (an upload) **or** `url` + `name`; optional `name`, `doc_type` → `DocumentOut`.
+- `DELETE /items/{id}/documents/{doc_id}` (manager) → 204 (deletes the stored file).
+- `POST /items/{id}/extras` (manager, setups) / `DELETE /items/{id}/extras/{id}`.
 
-`ItemCreate` fields: `type(req), name(req), industry, project, team, state(=production), description, dmz, location_id, parent_id, is_template(=false), card_type, responsible, lead, production_date(YYYY-MM-DD), version, serial, quantity(=1), storage_status, manager_ids[], child_ids[]`.
-`ItemUpdate`: same mutable subset (all optional), plus `manager_ids`.
-- `project`/`industry` must reference an **active catalog value** (§2) or the request 400s.
-- `child_ids[]` (create only): existing items adopted as children — a setup accepts assemblies **and** cards (§8), an assembly accepts cards; each adopted subtree inherits the new parent's location (§9).
-- `is_template=true` creates a reusable blueprint that stays out of the hierarchy, inventory, graph and export.
-- **Names are unique** (trimmed, case-insensitive) across live setups, assemblies and quantity-tracked cards (else 400). Serial-tracked cards are exempt — a batch is many rows of one model, told apart by serial. Templates never take part.
-- **Two kinds of card**, decided by `card_type` (required on every card):
-  | `card_type` | tracking | `quantity` | `serial` |
-  |---|---|---|---|
-  | `commercial` | `quantity` | the stock on this row (≥1) | must be empty |
-  | `company`, `unique` | `serial` | pinned to 1 | **required**, globally unique |
-  Sending the field that doesn't apply 400s. Changing `card_type` normalises the leftover (a stranded serial is cleared, a quantity reset to 1) and records it in the audit log, since a PATCH cannot clear a field with `null`.
-- A `serial` is globally unique across every card type and item (else 400).
+### Documents (uploads)
+`DocumentOut = { id, name, doc_type, url, is_file, original_filename, content_type, size_bytes, field_id, created_at }`.
+- `POST /uploads` (editor+) multipart `file` → `DocumentOut` — a **staged** upload, before the item exists. Put its id in a `files` field's value (`ItemCreate.values`, `ItemUpdate.values`, or a proposal's payload); the server attaches it. Unattached uploads are swept after 14 days.
+- `GET /documents/{id}/download` (viewer+) → the file (authenticated; files are never served statically). `MAX_UPLOAD_MB` (default 50) caps an upload.
 
 ### Change requests (§9)
-- `POST /change-requests` (editor+) body `{ action, item_id?, item_type?, payload{}, description(req), reason(req) }` → `ChangeRequestOut`. Fires manager notification.
-  - payload by action: `create`→ItemCreate dict; `update`→ItemUpdate dict; `move`→`{location_id, note?}`; `state_change`→`{state, note?}`; `link`→`{parent_id}`; `unlink`/`delete`→`{}`.
-- `GET /change-requests?status=&mine=` → `ChangeRequestOut[]`.
-- `GET /change-requests/{id}` → `ChangeRequestOut`.
-- `POST /change-requests/{id}/approve` (manager) `{ note? }` → applies + notifies proposer.
+- `POST /change-requests` (viewer+, see roles) `{ action, item_id?, template_id?, item_type?, payload{}, description?, reason(req) }` → `ChangeRequestOut`. `description` is generated from the action and payload when omitted (the proposer is asked only *why*). Viewers: `move` only (403 otherwise).
+  payload by action: `create`→`ItemCreate`; `update`→`ItemUpdate`; `move`→`{location_id, note?}`; `state_change`→`{state, note?}`; `link`→`{parent_id}`; `unlink`→`{location_id?}`; `delete`→`{}`; `template_create`→`TemplateCreate`; `template_update` (`template_id` required)→`TemplateUpdate`.
+- `GET /change-requests?status=&mine=` → `ChangeRequestOut[]`; `GET /change-requests/{id}`.
+- `POST /change-requests/{id}/approve` (manager) `{ note? }` → applies + notifies the proposer. A payload that no longer fits is a 400 (reject it).
 - `POST /change-requests/{id}/reject` (manager) `{ note? }`.
 
-`ChangeRequestOut = { id, action, item_id, item_type, item_name, payload, description, reason, status, proposed_by, reviewed_by, review_note, created_at, reviewed_at, proposer{brief}, reviewer{brief} }`.
+`ChangeRequestOut = { id, action, item_id, template_id, item_type, item_name, payload, description, reason, status, proposed_by, reviewed_by, review_note, created_at, reviewed_at, proposer, reviewer }`.
 
 ### Inventory (§7, §12)
-All stock figures are **sums of `Item.quantity`**, never row counts: a serial-tracked card pins that column to 1, a commercial card holds its whole stock on one row.
+All figures are **sums of `Item.quantity`**. Definitions:
+- **desiccator** — a loose card (no parent) at a location with `is_desiccator`;
+- **available** — desiccator stock in state `built` or `ok`: what can be built with now;
+- **in use** — loose, elsewhere; **assembled** — inside an item; **destroyed** cards count nowhere.
 
-- `GET /inventory/summary` → `{ setups, assemblies, cards, cards_in_use, cards_desiccator, faulty_items, pending_change_requests, low_stock_alerts }`. The three `cards*` figures count physical units.
-- `GET /inventory/cards?card_type=` → `InventoryGroup[]`.
-- `GET /inventory/desiccator?card_type=` → `InventoryGroup[]`.
-  `InventoryGroup = { card_type, tracking, name, version, production_date, total, in_use, desiccator, assembled, records, serials[] }`.
-  `tracking` (`quantity|serial`) and `records` (rows behind `total`) explain where the number came from; `serials[]` lists every unit of a serial-tracked group. Commercial cards are included — they used to be filtered out entirely.
-  **One card name is several groups**: the key is `(card_type, name, version, production_date)`, so 8 boards under one name across two versions come back as `total: 6` + `total: 2` and *no* group says 8. The parts always sum to the whole; the UI adds the per-model subtotal on top.
-- `GET /inventory/thresholds` → `ThresholdOut[]` (`{ id, card_type, tracking, name, version, min_quantity, editor_email, current_quantity, is_low }`).
-- `GET /inventory/low-stock` → `ThresholdOut[]`.
-- `POST /inventory/thresholds` (editor+) `ThresholdCreate = { item_id(req), min_quantity, editor_email?, any_version? }` → `ThresholdOut`.
-  A threshold is set on **an existing card**: the server derives the watched group (`card_type`, `name`, `version`) from `item_id`, 400s if that id isn't a live card, and 400s on a second threshold for the same group. `any_version: true` widens the watch from that card's version to the whole model. Alerts then carry `item_id`/`link` and point at a real card.
-- `DELETE /inventory/thresholds/{id}` (manager) → 204.
+- `GET /inventory/summary` → `{ setups, assemblies, cards, cards_in_use, cards_desiccator, cards_available, faulty_items, pending_change_requests, low_stock_alerts, templates }`.
+- `GET /inventory/cards?card_type=` → `InventoryGroup[]` — one per **card template**:
+  `{ template_id, name, card_type, tracking, serial_prefix, total, available, desiccator, in_use, assembled, faulty, records, available_serials[], min_quantity, is_low }`.
+- `GET /inventory/desiccator?card_type=` — the groups with desiccator stock.
+- `GET /inventory/thresholds` / `GET /inventory/low-stock` → `ThresholdOut[] = { id, template_id, name, card_type, tracking, min_quantity, editor_email, current_quantity, is_low }` where `current_quantity` is the **available** stock.
+- `POST /inventory/thresholds` (editor+) `{ template_id, min_quantity, editor_email? }` → `ThresholdOut` — sets (or replaces) the template's threshold.
+- `DELETE /inventory/thresholds/{id}` (manager).
 
-### Catalog — admin vocabularies (§2)
-- `GET /catalog?category=project|industry&active_only=` (viewer+) → `CatalogOptionOut[]` (`{ id, category, value, description, active, sort_order, usage_count }`).
-- `POST /catalog` (manager) `{ category, value, description?, active?, sort_order? }` → `CatalogOptionOut`.
-- `PATCH /catalog/{id}` (manager) `{ value?, description?, active?, sort_order? }` (renaming a value re-points existing items).
-- `DELETE /catalog/{id}` (manager) → 204 (400 if the value is still in use — deactivate instead).
+### Catalog — admin vocabularies
+- `GET /catalog?category=project|industry|team&active_only=` → `CatalogOptionOut[] = { id, category, value, description, active, sort_order, usage_count, linked_ids[] }`.
+- `POST /catalog`, `PATCH /catalog/{id}` (manager). Items hold the **id**, so a rename reaches them with no cascade.
+- `PUT /catalog/{id}/links` (manager) `{ category, option_ids[] }` → `CatalogOptionOut` — this value's links to one *other* category, as the end state. Links are many-to-many and **two-way** (one row per pair), so they show from both ends.
+- `GET /catalog/links` → `[{ a_id, b_id }]`.
+- `DELETE /catalog/{id}` (manager) — 400 while used by an item or a template.
 
-### Search — global (§7)
-- `GET /search?q=&limit=` (viewer+) → `{ query, total, items[], locations[], users[] }`.
-  `SearchHit = { kind: item|location|user, id, title, subtitle, badge, state?, link }`. Ranked exact → prefix → word → substring. `users[]` is populated for **managers only**.
+### Locations & the desiccator
+- `GET /locations` → `LocationOut[] = { id, name, building, room, x, y, notes, is_desiccator, item_count }` (x, y in 0..100).
+- `POST /locations`, `PATCH /locations/{id}` (editor+; only managers may change `is_desiccator`), `DELETE /locations/{id}` (manager; 400 while items are there).
+- `PUT /locations/desiccator` (manager) `{ location_ids[] }` → `LocationOut[]` — the full set of desiccator locations.
 
-### Locations (floor-plan map)
-- `GET /locations` → `LocationOut[]` (`{ id, name, building, room, x, y, notes, item_count }`; x,y are 0..100 floor-plan coords).
-- `POST /locations` (editor+), `PATCH /locations/{id}` (editor+), `DELETE /locations/{id}` (manager).
-
-### Map buildings (editable floor-plan background)
-- `GET /map/buildings` (viewer+) → `MapBuildingOut[]` (`{ id, name, x, y, width, height, color, notes, sort_order }`;
-  x,y are the top-left corner, all four 0..100 so the plan is resolution-independent). Ordered by `sort_order, id`.
-- `POST /map/buildings` (editor+), `PATCH /map/buildings/{id}` (editor+), `DELETE /map/buildings/{id}` (manager).
-  `width`/`height` must be `> 0`.
+### Map buildings
+- `GET /map/buildings` (viewer+), `POST`/`PATCH /map/buildings/{id}` (editor+), `DELETE` (manager). All geometry 0..100.
 
 ### Graph
-- `GET /graph?root_id=` → `{ nodes:[{id,label,type,state,card_type}], edges:[{source,target}] }` (source=parent, target=child). Templates are excluded.
+`GraphOut = { nodes: [{ id, label, type, state, card_type, serial, template_id, count }], edges: [{ source, target }], roots[] }`.
+- `GET /graph/templates?root_template_id=` — the hierarchy the **templates** define (node ids are template ids, `count` = live units).
+- `GET /graph?template_id=` — every live tree built from that template (one root per item).
+- `GET /graph?root_id=&ancestors=` — one item's tree; `ancestors=true` adds the path up to the top.
+- `GET /graph` — everything (small systems/scripts; the UI uses the views above).
 
 ### Audit (§10)
-- `GET /audit?item_id=&limit=` → `AuditOut[]` (`{ id, item_id, item_name, action, summary, details, user_id, user_name, created_at }`).
-- `GET /audit/my-items?period=day|week|month` (manager) → changes on items linked to the current manager in the period.
+`AuditOut = { id, item_id, template_id, item_name, action, summary, details, user_id, user_name, created_at }`.
+- `GET /audit?item_id=&template_id=&period=&mine=&action=&search=&limit=` — `period`: `day|week|month|half_year|year|all`; `mine=true` keeps only entries of items **linked to me** (I manage them or am their responsible) — nothing else, and nothing at all if I'm linked to no item.
+- `GET /audit/my-items?period=` (viewer+) — shorthand for `mine=true`.
+- `GET /audit/export?…same filters` → xlsx.
 
 ### Users (§8)
 - `GET /users` (viewer+) → `UserOut[]`, `GET /users/managers` (viewer+) → `UserBrief[]`.
-  `UserOut = { id, full_name, email, role, is_active, created_at, login_hint_visible, has_login_hint_password }` — the hint password itself is never returned here, only whether one is published.
-- `POST /users` (manager) `{ email, full_name, password, role }`.
-- `PATCH /users/{id}` (manager) `{ full_name?, role?, is_active?, password?, login_hint_visible?, login_hint_password? }`.
-  `login_hint_password: ""` withdraws a published password (leaving an email-only shortcut); omitting the field leaves it untouched. Both hint fields land in the audit log.
-- `DELETE /users/{id}` (manager).
+- `POST /users`, `PATCH /users/{id}`, `DELETE /users/{id}` (manager). Deleting a user also removes them from template fields that list them.
 
 ### Import / Export (§11)
-- `GET /data/template?type=` → xlsx (download).
-- `GET /data/export?type=` → xlsx (download).
-- `POST /data/import` (editor+) multipart `file` (.xlsx) → `{ created, errors:[{row,error}] }`.
+- `GET /data/template?template_id=&type=` → xlsx: a *Read me* sheet, then **one sheet per template** (title `C-PRB Power Regulator Board`, …) whose header row is that template's creation fields (per-item + list fields, in order; not files), preceded by an optional `Serial` column and followed, for containers, by `Contents` (serials to place inside). Required headers are highlighted; each header's comment states its format and allowed values; list columns carry a dropdown.
+- `POST /data/import` (manager) multipart `file` (.xlsx/.xlsm) → `{ created, by_template{name: n}, errors: [] }`. **All or nothing**: any invalid cell → 400 `{ detail, errors: [{ sheet, cell, row, column, error }] }` listing every bad cell, and nothing is saved.
+- `GET /data/export?template_id=&type=` → xlsx, one sheet per template with readable names.
 
 ## Notification API (notification-service, port 8001)
-Validates the same Bearer JWT; derives the current user from `sub`.
-- `GET /notifications?unread_only=&limit=` → `Notification[]` (newest first) for the current user.
+- `GET /notifications?status=all|unread|read&limit=&offset=` → `Notification[]` (newest first) — **every** notification addressed to me, or only unread/read ones; page with `offset`. (`unread_only=true` still works.)
   `Notification = { id, type, title, body, payload, link, read, created_at }`.
-  `payload` is the source event's structured context (`null` for older rows). A `inventory.low_stock` alert carries `{ components: [{ threshold_id, item_id, link, name, card_type, tracking, version, current_quantity, min_quantity, shortfall }] }`, which the UI renders as a clickable list — `body` holds the same list as plain text for email.
-- `GET /notifications/unread-count` → `{ count }`.
-- `POST /notifications/{id}/read` → 204.
-- `POST /notifications/read-all` → 204.
-- `GET /health`.
+  A `inventory.low_stock` alert's `payload.components[]` = `{ threshold_id, template_id, link, name, card_type, tracking, current_quantity, min_quantity, shortfall }`.
+- `GET /notifications/count` → `{ total, unread, read }`; `GET /notifications/unread-count` → `{ count }`.
+- `POST /notifications/{id}/read`, `POST /notifications/read-all` → 204.
 
 ## Event bus (Redis pub/sub, channel `lattice:events`)
 core-api publishes `Event` JSON; notification-service consumes and fans out to
-in-app notifications (one row per recipient with a `user_id`) + emails (SMTP for
-recipients with an `email`).
+in-app notifications (one row per recipient with a `user_id`) + emails.
 
 ```
 Event = {
@@ -171,18 +213,22 @@ Event = {
 `EventType`: `change_request.submitted | change_request.approved |
 change_request.rejected | inventory.low_stock | item.state_changed`.
 
-`inventory.low_stock` is published as **one digest per recipient**, listing only
-the groups that recipient is responsible for (`recipients` therefore holds a
-single entry), with the components in `payload.components[]`.
+`inventory.low_stock` is one digest per recipient, listing the templates that
+recipient is responsible for in `payload.components[]`.
 
-The `lattice_shared` package (already built) provides `EventBus` and `Event`:
-`from lattice_shared.events import EventBus, Event, EventType, Recipient`.
-`EventBus(redis_url).subscribe()` is an async generator yielding `Event`s.
+## Database & migrations
+
+The schema is owned by **Alembic** (`services/core-api/src/lattice_core/migrations`);
+the API upgrades the database to head on start-up. A database created before
+migrations existed is converted once, in a single transaction, by
+`lattice_core/legacy_upgrade.py` (one template per distinct item name, fresh
+serials, the old serial kept in a field, states/card types mapped, pending
+proposals closed). Enums are checked VARCHARs (not native types) so a
+vocabulary can change with one migration.
 
 ## First sign-in
 
-The system ships **empty** — no projects, locations, items or floor plan. The
-only account created on first boot is the bootstrap administrator
-(`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`, default
-`admin@lattice.io` / `admin1234`). Everything else is created through the UI or
-the API. See [`USER_GUIDE.md`](USER_GUIDE.md) for the order to do it in.
+The system ships **empty**. The only account created on first boot is the
+bootstrap administrator (`BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`,
+default `admin@lattice.io` / `admin1234`). See [`USER_GUIDE.md`](USER_GUIDE.md)
+for the order to set things up in.
