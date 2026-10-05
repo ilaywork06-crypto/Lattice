@@ -1,11 +1,11 @@
-"""Inventory, desiccator stock and low-stock thresholds (§7, §12)."""
+"""Inventory, desiccator stock and low-stock thresholds."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from lattice_core.database import get_db
 from lattice_core.deps import require_editor, require_manager, require_viewer
-from lattice_core.models import CardType, Item, ItemType, StockThreshold, User
+from lattice_core.models import CardType, ItemTemplate, ItemType, StockThreshold, User
 from lattice_core.schemas import (
     InventoryGroup,
     InventorySummary,
@@ -37,13 +37,7 @@ def desiccator(
     db: Session = Depends(get_db),
     _: User = Depends(require_viewer),
 ):
-    """Only the groups actually holding stock in the desiccator (§12).
-
-    The condition used to be `g.desiccator > 0 or g.total > 0`; a group only
-    exists when it has at least one card, so `total > 0` was always true and the
-    whole filter passed everything through — making this endpoint a duplicate of
-    /inventory/cards and the UI's All/Desiccator toggle do nothing.
-    """
+    """Only the templates with stock actually sitting in the desiccator."""
     return [g for g in svc.card_groups(db, card_type) if g.desiccator > 0]
 
 
@@ -63,59 +57,20 @@ async def create_threshold(
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
-    """Set a minimum on the model of an **existing** card.
-
-    The group is derived from that card rather than typed in, so a threshold can
-    never watch a name nobody stocks (and so its alerts can link to a real card).
-    """
-    item = db.get(Item, data.item_id)
-    if item is None or item.type != ItemType.card or item.is_template:
-        raise HTTPException(
-            status_code=400,
-            detail="Pick an existing card to set a stock threshold on.",
-        )
-    if item.card_type is None:
-        raise HTTPException(
-            status_code=400, detail=f"Card '{item.name}' has no card type."
-        )
-
-    version = None if data.any_version else item.version
-    clash = (
-        db.query(StockThreshold)
-        .filter(
-            StockThreshold.card_type == item.card_type,
-            StockThreshold.name == item.name,
-            StockThreshold.version.is_(None) if version is None
-            else StockThreshold.version == version,
-        )
-        .first()
-    )
-    if clash:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"A threshold already watches '{item.name}'"
-                + (f" v{version}" if version else " (all versions)")
-                + " — edit or remove that one instead of adding a second."
-            ),
-        )
-
-    t = StockThreshold(
-        item_id=item.id,
-        card_type=item.card_type,
-        name=item.name,
-        version=version,
-        min_quantity=data.min_quantity,
-        editor_email=data.editor_email,
-    )
-    db.add(t)
+    """Set (or replace) the minimum available stock of one card template."""
+    tpl = db.get(ItemTemplate, data.template_id)
+    if tpl is None or tpl.type != ItemType.card:
+        raise HTTPException(status_code=400, detail="Pick a card template to set a threshold on.")
+    t = db.query(StockThreshold).filter(StockThreshold.template_id == tpl.id).first()
+    if t is None:
+        t = StockThreshold(template_id=tpl.id)
+        db.add(t)
+    t.min_quantity = data.min_quantity
+    t.editor_email = data.editor_email
     db.commit()
     db.refresh(t)
     await svc.check_and_alert_low_stock(db)
-    for status in svc.threshold_status(db):
-        if status.id == t.id:
-            return status
-    raise HTTPException(status_code=500, detail="Threshold not found after create")
+    return svc.threshold_out(db, t)
 
 
 @router.delete("/thresholds/{threshold_id}", status_code=204)

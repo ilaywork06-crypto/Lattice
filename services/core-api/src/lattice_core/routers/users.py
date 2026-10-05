@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from lattice_core.database import get_db
 from lattice_core.deps import require_manager, require_viewer
-from lattice_core.models import ChangeRequest, User, UserRole
+from lattice_core.models import ChangeRequest, FieldMode, FieldType, TemplateField, User, UserRole
 from lattice_core.schemas import UserBrief, UserCreate, UserOut, UserUpdate
 from lattice_core.security import hash_password
 from lattice_core.services.audit import record_audit
@@ -123,8 +123,25 @@ def delete_user(
                 "account instead — it blocks sign-in and keeps the history intact."
             ),
         )
+    _forget_in_templates(db, user.id)
     record_audit(
         db, action="user.delete", summary=f"Deleted user {user.email}", user=current
     )
     db.delete(user)
     db.commit()
+
+
+def _forget_in_templates(db: Session, user_id: int) -> None:
+    """Template fields hold user ids in JSON (fixed values, list options); a
+    foreign key can't reach into those, so drop the deleted user by hand."""
+    for f in db.query(TemplateField).filter(
+        TemplateField.field_type.in_([FieldType.managers, FieldType.responsible])
+    ):
+        options = (f.config or {}).get("options")
+        if options and user_id in options:
+            f.config = {**f.config, "options": [o for o in options if o != user_id]}
+        if f.mode == FieldMode.fixed:
+            if f.fixed_value == user_id:
+                f.fixed_value = None
+            elif isinstance(f.fixed_value, list) and user_id in f.fixed_value:
+                f.fixed_value = [v for v in f.fixed_value if v != user_id]

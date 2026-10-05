@@ -1,9 +1,9 @@
 """Smart global search across the whole system (requirement §7).
 
-One endpoint answers the app-wide search box. It looks through the meaningful
-text on items (name, serial, version, project, industry, team, description,
-DAMATZ), plus locations and — for managers only — users, then ranks results so the
-most relevant (exact, then prefix, then substring) float to the top.
+One endpoint answers the app-wide search box. It looks through items (template
+name, serial, project/industry/team), templates (name, serial prefix), locations
+and — for managers only — users, then ranks results so the most relevant (exact,
+then prefix, then substring) float to the top.
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -12,12 +12,13 @@ from sqlalchemy.orm import Session, joinedload
 
 from lattice_core.database import get_db
 from lattice_core.deps import require_viewer
-from lattice_core.models import Item, Location, User, UserRole
+from lattice_core.models import CatalogOption, Item, ItemTemplate, Location, User, UserRole
 from lattice_core.schemas import SearchHit, SearchResults
 
 router = APIRouter(prefix="/search", tags=["search"])
 
 _ITEM_LIMIT = 20
+_TPL_LIMIT = 8
 _LOC_LIMIT = 8
 _USER_LIMIT = 8
 
@@ -62,23 +63,24 @@ def search(
     ql = term.lower()
     like = _like(term)
 
-    # ── items ──
+    # ── items (by template name, serial, or catalog value) ──
     item_rows = (
         db.query(Item)
-        .options(joinedload(Item.location))
-        .filter(Item.is_template.is_(False))
+        .join(Item.template)
+        .outerjoin(CatalogOption, or_(
+            CatalogOption.id == Item.project_id,
+            CatalogOption.id == Item.industry_id,
+            CatalogOption.id == Item.team_id,
+        ))
+        .options(joinedload(Item.location), joinedload(Item.template))
         .filter(
             or_(
-                Item.name.ilike(like, escape="\\"),
+                ItemTemplate.name.ilike(like, escape="\\"),
                 Item.serial.ilike(like, escape="\\"),
-                Item.version.ilike(like, escape="\\"),
-                Item.project.ilike(like, escape="\\"),
-                Item.industry.ilike(like, escape="\\"),
-                Item.team.ilike(like, escape="\\"),
-                Item.description.ilike(like, escape="\\"),
-                Item.dmz.ilike(like, escape="\\"),
+                CatalogOption.value.ilike(like, escape="\\"),
             )
         )
+        .distinct()
         .limit(200)
         .all()
     )
@@ -86,22 +88,23 @@ def search(
         item_rows,
         key=lambda i: (
             -_score(
-                ql, i.name, i.serial, i.version, i.project, i.industry, i.team,
-                i.description, i.dmz,
+                ql, i.serial, i.name,
+                i.project.value if i.project else None,
+                i.industry.value if i.industry else None,
+                i.team.value if i.team else None,
             ),
             i.name.lower(),
+            i.serial,
         ),
     )[:_ITEM_LIMIT]
     items = [
         SearchHit(
             kind="item",
             id=i.id,
-            title=i.name,
+            title=f"{i.name} · {i.serial}",
             subtitle=" · ".join(
                 p for p in (
-                    i.serial,
-                    i.version and f"v{i.version}",
-                    i.project,
+                    i.project.value if i.project else None,
                     i.location.name if i.location else None,
                 ) if p
             ) or None,
@@ -110,6 +113,33 @@ def search(
             link=f"/items/{i.id}",
         )
         for i in scored_items
+    ]
+
+    # ── templates ──
+    tpl_rows = (
+        db.query(ItemTemplate)
+        .filter(
+            or_(
+                ItemTemplate.name.ilike(like, escape="\\"),
+                ItemTemplate.serial_prefix.ilike(like, escape="\\"),
+            )
+        )
+        .limit(80)
+        .all()
+    )
+    scored_tpls = sorted(
+        tpl_rows, key=lambda t: (-_score(ql, t.name, t.serial_prefix), t.name.lower())
+    )[:_TPL_LIMIT]
+    templates = [
+        SearchHit(
+            kind="template",
+            id=t.id,
+            title=t.name,
+            subtitle=t.serial_prefix,
+            badge=t.type.value,
+            link=f"/templates/{t.id}",
+        )
+        for t in scored_tpls
     ]
 
     # ── locations ──
@@ -173,8 +203,9 @@ def search(
 
     return SearchResults(
         query=term,
-        total=len(items) + len(locations) + len(users),
+        total=len(items) + len(templates) + len(locations) + len(users),
         items=items,
+        templates=templates,
         locations=locations,
         users=users,
     )

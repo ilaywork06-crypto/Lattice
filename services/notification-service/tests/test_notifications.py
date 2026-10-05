@@ -90,3 +90,24 @@ def test_notifications_without_a_payload_stay_null(client, token_for):
 def test_email_fanout_never_raises(client):
     # No SMTP server in tests → must be caught and logged, not raised.
     asyncio.run(_send_emails(_event()))
+
+
+def test_all_read_and_unread_views(client, token_for):
+    h = token_for(41)
+    for _ in range(3):
+        ev = _event()
+        ev.recipients = [Recipient(user_id=41)]
+        _persist_notifications(ev)
+    first = client.get("/notifications", headers=h).json()[0]["id"]
+    client.post(f"/notifications/{first}/read", headers=h)
+
+    assert len(client.get("/notifications?status=all", headers=h).json()) == 3
+    assert len(client.get("/notifications?status=unread", headers=h).json()) == 2
+    read = client.get("/notifications?status=read", headers=h).json()
+    assert [n["id"] for n in read] == [first]
+    assert client.get("/notifications/count", headers=h).json() == {
+        "total": 3, "unread": 2, "read": 1,
+    }
+    page = client.get("/notifications?limit=2&offset=2", headers=h).json()
+    assert len(page) == 1
+    assert client.get("/notifications?status=bogus", headers=h).status_code == 422

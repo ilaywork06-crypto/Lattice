@@ -1,14 +1,16 @@
-"""Change-request endpoints — the approval workflow (§9)."""
+"""Change-request endpoints — the approval workflow (§9).
+
+Editors may propose any change; viewers may propose a location change only.
+"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from lattice_core.database import get_db
-from lattice_core.deps import require_editor, require_manager, require_viewer
+from lattice_core.deps import require_manager, require_viewer
 from lattice_core.models import ChangeRequest, ChangeStatus, Item, User
 from lattice_core.schemas import ChangeRequestCreate, ChangeRequestOut, ReviewRequest
 from lattice_core.services import change_requests as svc
-from lattice_core.services import items as item_svc
 
 router = APIRouter(prefix="/change-requests", tags=["change-requests"])
 
@@ -29,9 +31,12 @@ def _load(db: Session, cr_id: int) -> ChangeRequest:
 async def submit(
     data: ChangeRequestCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_editor),
+    user: User = Depends(require_viewer),
 ):
-    cr = svc.create_change_request(db, data.model_dump(), user)
+    try:
+        cr = svc.create_change_request(db, data.model_dump(mode="json"), user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     db.commit()
     db.refresh(cr)
     item = db.get(Item, cr.item_id) if cr.item_id else None
@@ -53,7 +58,7 @@ def list_requests(
         q = q.filter(ChangeRequest.status == status)
     if mine:
         q = q.filter(ChangeRequest.proposed_by == user.id)
-    return q.order_by(ChangeRequest.created_at.desc()).all()
+    return q.order_by(ChangeRequest.created_at.desc(), ChangeRequest.id.desc()).all()
 
 
 @router.get("/{cr_id}", response_model=ChangeRequestOut)
@@ -71,9 +76,9 @@ async def approve(
     cr = _load(db, cr_id)
     try:
         svc.decide(db, cr, user, approve=True, note=(body.note if body else None))
-    except item_svc.DomainError as exc:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise
     db.commit()
     db.refresh(cr)
     await svc.notify_decision(db, cr)
@@ -90,9 +95,9 @@ async def reject(
     cr = _load(db, cr_id)
     try:
         svc.decide(db, cr, user, approve=False, note=(body.note if body else None))
-    except item_svc.DomainError as exc:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise
     db.commit()
     db.refresh(cr)
     await svc.notify_decision(db, cr)

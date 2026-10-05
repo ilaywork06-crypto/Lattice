@@ -71,6 +71,11 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@lattice.io}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin1234}
+      # Uploaded documents (served back through the API, never directly).
+      UPLOAD_DIR: /data/uploads
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+    volumes:
+      - uploads_core:/data/uploads
     ports:
       - "8000:8000"
     depends_on:
@@ -118,3 +123,4 @@ services:
 volumes:
   pgdata_core:
   pgdata_notify:
+  uploads_core:

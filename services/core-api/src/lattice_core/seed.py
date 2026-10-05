@@ -1,54 +1,57 @@
-"""Idempotent bootstrap: create the schema and the one account needed to sign in.
+"""Idempotent bootstrap: bring the schema to head and create the one account
+needed to sign in.
 
 The system ships **empty**. Nothing here invents projects, locations, items or a
 floor plan — a customer's first login lands on a blank system they fill in
 themselves. The only row created is the bootstrap administrator, without which
 no one could sign in at all.
+
+The schema is owned by Alembic (``lattice_core/migrations``). A database created
+before migrations existed is converted once by ``legacy_upgrade`` and then
+carries on like any other.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-from sqlalchemy import inspect, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from lattice_core.config import get_settings
-from lattice_core.database import Base, SessionLocal, engine
+from lattice_core.database import SessionLocal, engine
 from lattice_core.models import User, UserRole
 from lattice_core.security import hash_password
 
 logger = logging.getLogger("lattice_core.seed")
 
-
-# Columns added after the first release, as (table, column, DDL type + default).
-# The schema comes from ``create_all``, which only ever creates *missing tables*
-# — it never touches one that already exists — so a database predating any of
-# these would fail on every query for them.
-_ADDED_COLUMNS = [
-    ("items", "quantity", "INTEGER NOT NULL DEFAULT 1"),
-    ("users", "login_hint_visible", "BOOLEAN NOT NULL DEFAULT FALSE"),
-    ("users", "login_hint_password", "VARCHAR(255)"),
-]
+MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
-def _ensure_columns() -> None:
-    """Backfill columns introduced after a database was created. Idempotent."""
-    inspector = inspect(engine)
-    tables = set(inspector.get_table_names())
-    for table, column, ddl in _ADDED_COLUMNS:
-        if table not in tables:
-            continue
-        if column in {c["name"] for c in inspector.get_columns(table)}:
-            continue
-        with engine.begin() as conn:
-            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
-        logger.info("Added %s.%s to an existing database", table, column)
+def alembic_config(connection: Connection | None = None) -> Config:
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
+    if connection is not None:
+        # Run on the caller's connection/transaction (no URL parsing involved).
+        cfg.attributes["connection"] = connection
+    return cfg
+
+
+def upgrade_schema(connection: Connection) -> None:
+    command.upgrade(alembic_config(connection), "head")
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    _ensure_columns()
+    from lattice_core import legacy_upgrade
+
+    with engine.begin() as conn:
+        if legacy_upgrade.needs_upgrade(conn):
+            legacy_upgrade.run(conn)
+        else:
+            upgrade_schema(conn)
     with SessionLocal() as db:
         _ensure_admin(db, get_settings())
         db.commit()

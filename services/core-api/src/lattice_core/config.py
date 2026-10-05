@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     bootstrap_admin_email: str = "admin@lattice.io"
     bootstrap_admin_password: str = "admin1234"
 
+    # Uploaded documents live on disk here (a volume in docker-compose); the
+    # database only records where. Files are served back through the API.
+    upload_dir: str = "./uploads"
+    max_upload_mb: int = 50
+
     # CORS (frontend origins)
     cors_origins: list[str] = [
         "http://localhost:5173",

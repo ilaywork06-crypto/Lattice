@@ -1,25 +1,40 @@
-"""Admin-managed controlled vocabularies (requirement §2).
+"""Admin-managed controlled vocabularies: projects, industries and teams.
 
-Projects and industries are no longer free text: an admin defines the allowed
-values here, and items may only reference an *active* value from the list. This
-keeps the data clean and consistent as the system scales to many users.
+Items reference a value **by id**, so renaming a value is a single row and every
+item follows; a value still in use (by an item or by a template's field) cannot
+be deleted — deactivate it instead.
+
+Any two values of *different* categories can be linked (team ↔ industry,
+team ↔ project, industry ↔ project), many-to-many and in both directions. A link
+is one row in ``catalog_links`` with the smaller id first, so it reads the same
+from either end.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from lattice_core.models import CatalogCategory, CatalogOption, Item
+from lattice_core.errors import DomainError
+from lattice_core.models import (
+    CATALOG_FIELD_TYPES,
+    CatalogCategory,
+    CatalogLink,
+    CatalogOption,
+    FieldMode,
+    Item,
+    TemplateField,
+)
 
-# Which item column each catalog category controls.
-_CATEGORY_FIELD: dict[CatalogCategory, str] = {
-    CatalogCategory.project: "project",
-    CatalogCategory.industry: "industry",
+_ITEM_COLUMN = {
+    CatalogCategory.industry: Item.industry_id,
+    CatalogCategory.project: Item.project_id,
+    CatalogCategory.team: Item.team_id,
 }
+_FIELD_TYPE_FOR = {category: ft for ft, category in CATALOG_FIELD_TYPES.items()}
 
 
-class CatalogError(ValueError):
+class CatalogError(DomainError):
     """Raised on an invalid catalog operation (mapped to HTTP 400)."""
 
 
@@ -39,14 +54,21 @@ def list_options(
 
 
 def usage_count(db: Session, option: CatalogOption) -> int:
-    """How many (non-template) items currently reference this value."""
-    field = getattr(Item, _CATEGORY_FIELD[option.category])
-    return (
-        db.query(func.count(Item.id))
-        .filter(field == option.value, Item.is_template.is_(False))
-        .scalar()
-        or 0
-    )
+    """How many items reference this value."""
+    column = _ITEM_COLUMN[option.category]
+    return db.query(func.count(Item.id)).filter(column == option.id).scalar() or 0
+
+
+def template_usage(db: Session, option: CatalogOption) -> list[str]:
+    """Names of templates whose fields fix or list this value."""
+    field_type = _FIELD_TYPE_FOR[option.category]
+    names = []
+    for f in db.query(TemplateField).filter(TemplateField.field_type == field_type).all():
+        listed = option.id in ((f.config or {}).get("options") or [])
+        fixed = f.mode == FieldMode.fixed and f.fixed_value == option.id
+        if listed or fixed:
+            names.append(f.template.name)
+    return sorted(set(names))
 
 
 def create_option(db: Session, data: dict) -> CatalogOption:
@@ -91,11 +113,7 @@ def update_option(db: Session, option: CatalogOption, data: dict) -> CatalogOpti
             )
             if clash is not None:
                 raise CatalogError(f"'{new_value}' already exists")
-            # keep existing items in sync with the renamed value
-            field = _CATEGORY_FIELD[option.category]
-            db.query(Item).filter(getattr(Item, field) == option.value).update(
-                {field: new_value}, synchronize_session=False
-            )
+            # Items hold the id, so a rename needs no cascade.
             option.value = new_value
     for attr in ("description", "active", "sort_order"):
         if attr in data and data[attr] is not None:
@@ -108,27 +126,82 @@ def delete_option(db: Session, option: CatalogOption) -> None:
         raise CatalogError(
             "This value is in use by existing items; deactivate it instead of deleting."
         )
+    templates = template_usage(db, option)
+    if templates:
+        raise CatalogError(
+            "This value is used by the template(s) "
+            + ", ".join(f"'{n}'" for n in templates)
+            + "; remove it there first or deactivate it instead."
+        )
     db.delete(option)
 
 
-def allowed_values(db: Session, category: CatalogCategory) -> set[str]:
-    return {
-        o.value
-        for o in db.query(CatalogOption).filter(
-            CatalogOption.category == category, CatalogOption.active.is_(True)
-        )
+# ─────────────────────────── links ───────────────────────────
+def _pair(a: int, b: int) -> tuple[int, int]:
+    return (a, b) if a < b else (b, a)
+
+
+def linked_ids(db: Session, option_id: int) -> list[int]:
+    rows = (
+        db.query(CatalogLink)
+        .filter(or_(CatalogLink.option_a_id == option_id, CatalogLink.option_b_id == option_id))
+        .all()
+    )
+    return [r.option_b_id if r.option_a_id == option_id else r.option_a_id for r in rows]
+
+
+def all_links(db: Session) -> list[tuple[int, int]]:
+    return [(r.option_a_id, r.option_b_id) for r in db.query(CatalogLink).all()]
+
+
+def set_links(
+    db: Session,
+    option: CatalogOption,
+    category: CatalogCategory,
+    target_ids: list[int],
+) -> list[int]:
+    """Make ``option``'s links to values of ``category`` exactly ``target_ids``.
+
+    Scoped to one category at a time, so editing a team's projects never touches
+    its industries. Both ends see the result: it is the same row.
+    """
+    if category == option.category:
+        raise CatalogError("A value can only be linked to values of another category")
+    wanted = list(dict.fromkeys(target_ids))
+    targets = (
+        db.query(CatalogOption).filter(CatalogOption.id.in_(wanted)).all() if wanted else []
+    )
+    if len(targets) != len(wanted):
+        raise CatalogError("One or more values to link no longer exist")
+    for t in targets:
+        if t.category != category:
+            raise CatalogError(f"'{t.value}' is a {t.category.value}, not a {category.value}")
+
+    current = {
+        oid
+        for oid in linked_ids(db, option.id)
+        if db.get(CatalogOption, oid).category == category
     }
+    for oid in current - set(wanted):
+        a, b = _pair(option.id, oid)
+        db.query(CatalogLink).filter(
+            CatalogLink.option_a_id == a, CatalogLink.option_b_id == b
+        ).delete(synchronize_session=False)
+    for oid in set(wanted) - current:
+        a, b = _pair(option.id, oid)
+        db.add(CatalogLink(option_a_id=a, option_b_id=b))
+    db.flush()
+    return wanted
 
 
-def validate_item_catalog(db: Session, project: str | None, industry: str | None) -> None:
-    """Ensure project/industry (when provided) reference an active catalog value."""
-    if project:
-        if project not in allowed_values(db, CatalogCategory.project):
-            raise CatalogError(
-                f"'{project}' is not a known project. Ask an admin to add it in Catalog."
-            )
-    if industry:
-        if industry not in allowed_values(db, CatalogCategory.industry):
-            raise CatalogError(
-                f"'{industry}' is not a known industry. Ask an admin to add it in Catalog."
-            )
+def link(db: Session, a_id: int, b_id: int) -> None:
+    a, b = db.get(CatalogOption, a_id), db.get(CatalogOption, b_id)
+    if a is None or b is None:
+        raise CatalogError("Catalog value not found")
+    if a.category == b.category:
+        raise CatalogError("A value can only be linked to values of another category")
+    lo, hi = _pair(a_id, b_id)
+    exists = db.get(CatalogLink, (lo, hi))
+    if exists is None:
+        db.add(CatalogLink(option_a_id=lo, option_b_id=hi))
+        db.flush()
