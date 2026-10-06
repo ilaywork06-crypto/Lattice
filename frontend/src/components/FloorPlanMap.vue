@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useTheme } from 'vuetify'
 import type { LocationOut, MapBuilding } from '@/api/types'
 
 const props = defineProps<{
@@ -22,6 +23,7 @@ const emit = defineEmits<{
   ]
 }>()
 
+const theme = useTheme()
 const svgRef = ref<SVGSVGElement | null>(null)
 
 // ── local, drag-preview copy of the buildings ──────────────────────────────
@@ -166,7 +168,7 @@ function handlePos(b: Geo): { h: Handle; x: number; y: number }[] {
 }
 
 function markerColor(loc: LocationOut): string {
-  if (loc.id === props.selectedId) return '#5b6ef5'
+  if (loc.id === props.selectedId) return theme.current.value.colors.primary
   if (loc.item_count === 0) return '#9aa0b4'
   if (loc.item_count >= 10) return '#e5484d'
   if (loc.item_count >= 4) return '#e6a532'
@@ -341,14 +343,14 @@ function onMapClick(evt: MouseEvent) {
 }
 .handle {
   fill: #ffffff;
-  stroke: #5b6ef5;
+  stroke: rgb(var(--v-theme-primary));
   stroke-width: 0.4;
 }
 .handle-nw, .handle-se { cursor: nwse-resize; }
 .handle-ne, .handle-sw { cursor: nesw-resize; }
 .draft-rect {
-  fill: rgba(91, 110, 245, 0.18);
-  stroke: #5b6ef5;
+  fill: rgba(var(--v-theme-primary), 0.18);
+  stroke: rgb(var(--v-theme-primary));
   stroke-width: 0.4;
   stroke-dasharray: 1.4 1;
   pointer-events: none;
@@ -396,7 +398,7 @@ function onMapClick(evt: MouseEvent) {
   top: 10px;
   left: 10px;
   background: rgb(var(--v-theme-primary));
-  color: #fff;
+  color: rgb(var(--v-theme-on-primary));
   font-size: 12px;
   padding: 4px 10px;
   border-radius: 8px;
@@ -405,6 +407,7 @@ function onMapClick(evt: MouseEvent) {
   gap: 4px;
 }
 .map-hint.edit {
-  background: rgb(var(--v-theme-secondary, 124 77 255));
+  background: rgb(var(--v-theme-secondary));
+  color: rgb(var(--v-theme-on-secondary));
 }
 </style>

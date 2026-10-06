@@ -7,7 +7,7 @@ import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import { auditActionLabel, formatDate, timeAgo } from '@/constants'
+import { TYPE_COLORS, auditActionLabel, formatDate, timeAgo } from '@/constants'
 import type { AuditOut, InventorySummary, ThresholdOut } from '@/api/types'
 
 const router = useRouter()
@@ -32,27 +32,27 @@ const stats = computed<Stat[]>(() => {
   const s = summary.value
   if (!s) return []
   return [
-    { label: t('dash.stats.setups'), value: s.setups, icon: 'mdi-server', color: 'deep-purple', to: '/setups' },
+    { label: t('dash.stats.setups'), value: s.setups, icon: 'mdi-server', color: TYPE_COLORS.setup, to: '/setups' },
     {
       label: t('dash.stats.assemblies'),
       value: s.assemblies,
       icon: 'mdi-cpu-64-bit',
-      color: 'teal-darken-1',
+      color: TYPE_COLORS.assembly,
       to: '/assemblies',
     },
-    { label: t('dash.stats.cards'), value: s.cards, icon: 'mdi-memory', color: 'blue-darken-1', to: '/cards' },
+    { label: t('dash.stats.cards'), value: s.cards, icon: 'mdi-memory', color: TYPE_COLORS.card, to: '/cards' },
     {
       label: t('dash.stats.cardsInUse'),
       value: s.cards_in_use,
       icon: 'mdi-power-plug',
-      color: 'green-darken-1',
+      color: 'success',
       to: '/cards',
     },
     {
       label: t('dash.stats.cardsAvailable'),
       value: s.cards_available,
       icon: 'mdi-water-off',
-      color: 'cyan-darken-2',
+      color: 'info',
       to: '/inventory',
     },
     { label: t('dash.stats.faultyItems'), value: s.faulty_items, icon: 'mdi-alert', color: 'error' },
@@ -60,14 +60,14 @@ const stats = computed<Stat[]>(() => {
       label: t('dash.stats.pendingRequests'),
       value: s.pending_change_requests,
       icon: 'mdi-file-swap-outline',
-      color: 'amber-darken-2',
+      color: 'secondary',
       to: '/change-requests',
     },
     {
       label: t('dash.stats.lowStockAlerts'),
       value: s.low_stock_alerts,
       icon: 'mdi-alert-decagram',
-      color: 'orange-darken-3',
+      color: 'warning',
       to: '/inventory',
     },
   ]
