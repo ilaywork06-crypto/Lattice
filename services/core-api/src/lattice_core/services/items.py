@@ -502,14 +502,15 @@ def link_item(
     child.parent = parent
     # Assembled items inherit the container's location — and so does everything
     # already inside the child (a container drags its whole contents).
+    # A container with no location leaves its contents with none either — they
+    # are wherever it is, so they can't stay "in the desiccator" on their own.
     cascaded: list[int] = []
-    if parent.location_id is not None:
-        child.location_id = parent.location_id
-        for cid in _descendant_ids(child):
-            desc = db.get(Item, cid)
-            if desc is not None:
-                desc.location_id = parent.location_id
-                cascaded.append(cid)
+    child.location_id = parent.location_id
+    for cid in _descendant_ids(child):
+        desc = db.get(Item, cid)
+        if desc is not None and desc.location_id != parent.location_id:
+            desc.location_id = parent.location_id
+            cascaded.append(cid)
     record_audit(
         db,
         item=child,

@@ -444,6 +444,8 @@ class ItemTemplate(Base):
         foreign_keys=lambda: [TemplateChild.parent_template_id],
         back_populates="parent",
         cascade="all, delete-orphan",
+        # Stable order (Postgres returns rows in no particular order otherwise).
+        order_by=lambda: TemplateChild.child_template_id,
     )
     # Read-only conveniences over the same rows.
     child_templates: Mapped[list[ItemTemplate]] = relationship(

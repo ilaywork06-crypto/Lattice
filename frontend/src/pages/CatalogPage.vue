@@ -234,6 +234,13 @@ const locHeaders = computed(() => [
   { title: t('loc.colItems'), key: 'item_count', align: 'center', width: 100 },
 ])
 
+const groupsPanel = ref<{ load: () => Promise<void> } | null>(null)
+function refresh() {
+  void load()
+  if (tab.value === 'desiccator') void loadLocations()
+  if (tab.value === 'field_groups') void groupsPanel.value?.load()
+}
+
 onMounted(async () => {
   await load()
   if (tab.value === 'desiccator') await loadLocations()
@@ -244,7 +251,7 @@ onMounted(async () => {
   <v-container fluid class="pa-4 pa-md-6">
     <PageHeader :title="$t('nav.catalog')" :subtitle="$t('catalog.subtitle')" icon="mdi-tag-multiple-outline">
       <template #actions>
-        <v-btn variant="tonal" icon="mdi-refresh" :loading="loading" @click="load(); tab === 'desiccator' && loadLocations()" />
+        <v-btn variant="tonal" icon="mdi-refresh" :loading="loading" @click="refresh" />
         <v-btn v-if="isCategory" color="primary" prepend-icon="mdi-plus" @click="openCreate">
           {{ $t(ADD_LABEL[category]) }}
         </v-btn>
@@ -332,7 +339,7 @@ onMounted(async () => {
       </template>
 
       <!-- field groups: reusable sets of template fields -->
-      <FieldGroupsPanel v-else-if="tab === 'field_groups'" />
+      <FieldGroupsPanel v-else-if="tab === 'field_groups'" ref="groupsPanel" />
 
       <!-- desiccator: which locations count as stock -->
       <template v-else>

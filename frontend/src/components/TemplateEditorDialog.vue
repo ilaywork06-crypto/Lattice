@@ -112,6 +112,13 @@ const childChoices = computed(() =>
 )
 const templateName = (id: number) => allTemplates.value.find((x) => x.id === id)?.name ?? `#${id}`
 
+function onTypeChange(v: ItemType) {
+  form.card_type = v === 'card' ? 'house' : null
+  // Contents a template of the new type may not hold are dropped.
+  const allowed = new Set(childChoices.value.map((c) => c.value))
+  form.children = form.children.filter((c) => allowed.has(c.template_id))
+}
+
 // The chips pick the templates; each keeps its limits while it stays picked.
 const childIds = computed({
   get: () => form.children.map((c) => c.template_id),
@@ -260,7 +267,7 @@ const title = computed(() =>
                 :label="$t('fields.type')"
                 :items="ITEM_TYPES.map((ty) => ({ title: TYPE_LABELS[ty], value: ty }))"
                 :disabled="editing || duplicating"
-                @update:model-value="(v: ItemType) => (form.card_type = v === 'card' ? 'house' : null)"
+                @update:model-value="onTypeChange"
               />
             </v-col>
             <v-col cols="12" sm="5">

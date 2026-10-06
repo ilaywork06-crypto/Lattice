@@ -115,6 +115,7 @@ async function remove() {
 }
 
 onMounted(load)
+defineExpose({ load })
 </script>
 
 <template>

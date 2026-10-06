@@ -12,6 +12,7 @@ import { dataApi, templatesApi } from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
+import { stripIsolates } from '@/utils/bidi'
 import { downloadBlob } from '@/utils/download'
 import { ITEM_TYPES, TYPE_LABELS } from '@/constants'
 import type { ImportResult, ItemType, TemplateSummary } from '@/api/types'
@@ -33,7 +34,8 @@ const NAV_PLURAL: Record<ItemType, string> = {
 const scopeItems = computed(() => [
   { title: t('impexp.allTemplates'), value: 'all', props: { prependIcon: 'mdi-select-all' } },
   ...ITEM_TYPES.map((ty) => ({
-    title: t('impexp.allOfType', { type: t(NAV_PLURAL[ty]) }),
+    // A search box filters on this title: no isolate marks in it.
+    title: stripIsolates(t('impexp.allOfType', { type: t(NAV_PLURAL[ty]) })),
     value: `type:${ty}`,
     props: { prependIcon: 'mdi-shape-outline' },
   })),

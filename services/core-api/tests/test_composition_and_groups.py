@@ -288,3 +288,40 @@ def test_removing_and_reordering_children_keeps_the_rest(client, admin):
     r = client.post(f"/items/{card['id']}/link", json={"parent_id": box_item["id"]},
                     headers=admin)
     assert r.status_code == 400
+
+
+def test_a_card_inside_a_container_without_a_location_leaves_the_desiccator(client, admin):
+    card = _create_tpl(client, admin, "card", "Nowhere Card", "NWC")
+    box = _create_tpl(client, admin, "assembly", "Nowhere Box", "NWB",
+                      children=[{"template_id": card["id"]}])
+    c = _new(client, admin, card["id"])
+    assert c["storage_status"] == "desiccator"
+    b = _new(client, admin, box["id"])  # no location
+    r = client.post(f"/items/{c['id']}/link", json={"parent_id": b["id"]}, headers=admin)
+    assert r.status_code == 200, r.text
+    assert r.json()["location_id"] is None and r.json()["storage_status"] == "assembled"
+
+
+def test_moving_a_container_re_checks_the_stock_of_its_cards(client, admin, monkeypatch):
+    published = []
+
+    async def fake_publish(event):
+        published.append(event)
+
+    monkeypatch.setattr("lattice_core.events.publish_event", fake_publish)
+    card = _create_tpl(client, admin, "card", "Alert Card", "ALC")
+    box = _create_tpl(client, admin, "assembly", "Alert Box", "ALB",
+                      fields=[{"label": "Location", "field_type": "location"}],
+                      children=[{"template_id": card["id"]}])
+    desiccator = _loc(client, admin, "Desiccator — Team A")["id"]
+    lab = _loc(client, admin, "Lab A — Bench 1")["id"]
+    b = _new(client, admin, box["id"], location=desiccator)
+    c = _new(client, admin, card["id"])
+    client.post(f"/items/{c['id']}/link", json={"parent_id": b["id"]}, headers=admin)
+    client.post("/inventory/thresholds", json={"template_id": card["id"], "min_quantity": 0},
+                headers=admin)
+    published.clear()
+    client.post(f"/items/{b['id']}/move", json={"location_id": lab}, headers=admin)
+    comps = [c for e in published if e.type.value == "inventory.low_stock"
+             for c in e.payload["components"]]
+    assert any(x["template_id"] == card["id"] for x in comps)

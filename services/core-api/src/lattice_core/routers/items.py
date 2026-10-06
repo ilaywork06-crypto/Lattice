@@ -60,7 +60,9 @@ def _like(term: str) -> str:
 
 
 async def _maybe_alert_low_stock(db: Session, *items: Item) -> None:
-    if any(i.type == ItemType.card for i in items):
+    # A container carries its cards with it (in or out of the desiccator), so
+    # anything that is or holds a card can change the available stock.
+    if any(i.type == ItemType.card or i.children for i in items):
         await inv_svc.check_and_alert_low_stock(db)
 
 
@@ -302,7 +304,7 @@ async def bulk_action(
     try:
         for iid in ids:
             item = items[iid]
-            touched_card = touched_card or item.type == ItemType.card
+            touched_card = touched_card or item.type == ItemType.card or bool(item.children)
             if body.action == BulkAction.move:
                 if body.location_id is None:
                     raise DomainError("location_id is required for a bulk move")
