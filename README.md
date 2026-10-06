@@ -151,20 +151,22 @@ uv run alembic -c services/core-api/alembic.ini upgrade head   # the API also do
 | **Every item is created from a template**; one template per named card / assembly / setup | `models.ItemTemplate`, `services/templates.py`, `services/items.py:create_item` (`template_id` required) |
 | Template fields: fixed (white) / list (white ▾, first = default) / per item (grey), required (★), formats `XX-#####`, all field types | `models.TemplateField` (`FieldType`, `FieldMode`), `services/fields.py` |
 | Template edits apply to every item made from it (e.g. new manager → all items) | `services/templates.py:update_template` (read-through + propagation) |
-| Which templates may sit inside which (cards in assemblies, assemblies/cards in setups) | `template_children`; enforced by `services/items.py:validate_link` |
+| Which templates may sit inside which (cards in assemblies, assemblies/cards in setups), with a min/max count per child template | `template_children` (`min_count`, `max_count`) / `models.TemplateChild`; enforced by `services/items.py:check_capacity`; `ItemOut.composition` |
+| Duplicate a template (everything copied, editable, shared files copied) | `TemplateEditorDialog.vue` (`duplicateFrom`), `copy_files_from` / `source_template_id` |
+| Field groups: named reusable field sets in the catalog, searchable, loaded into the template editor | `models.FieldGroup`, `routers/field_groups.py`, `FieldGroupsPanel.vue`, `FieldGroupPicker.vue` |
 | Serials `C/A/S-XXX-###`: prefix from the template, number = highest + 1, editable, no duplicates | `services/serials.py`; unique index on `items.serial` |
 | States built / ok / faulty / destroyed (built by default) | `models.ItemState`, `services/items.py:change_state` |
 | Team catalog; two-way many-to-many links between team, industry and project | `CatalogCategory.team`, `models.CatalogLink`, `services/catalog.py`, `PUT /catalog/{id}/links` |
 | Viewers may propose a location change; editors propose item and template changes | `services/change_requests.py` (`_ALLOWED_ACTIONS`) |
 | Lists grouped by template with per-status counts; a template's units with state, location, parent, serial | `GET /templates` (`counts`), `GET /items?template_id=`, `TemplateGroupsView.vue` |
 | Real document uploads | `models.Document` (`storage_key`), `services/files.py`, `/uploads`, `/documents/{id}/download` |
-| Desiccator = a set of locations (Catalog → Desiccator); stock thresholds on built/ok cards in it | `Location.is_desiccator`, `PUT /locations/desiccator`, `services/inventory.py` |
+| Desiccator = a set of locations (Catalog → Desiccator) — a card there is in it, loose or assembled; stock thresholds on built/ok cards in it | `Location.is_desiccator`, `PUT /locations/desiccator`, `services/inventory.py` |
 | Hierarchy graph by templates, all trees of a template, one item's tree | `routers/graph.py`, `HierarchyGraph.vue`, `GraphPage.vue`, item page → Hierarchy |
 | Map 100 × 100 floor-plan | `FloorPlanMap.vue` |
 | Audit: my items only, 6 months / year / all time, Excel export | `routers/audit.py` |
 | Notifications: all / unread / read | notification-service `GET /notifications?status=` |
 | Excel import per template (headers = creation fields), all-or-nothing with per-cell errors; export | `services/importexport.py` |
-| Change-approval workflow, audit log, managers per item, low-stock alerts, dark/light/pastel themes, RTL Hebrew | as before (`change_requests.py`, `audit.py`, `inventory.py`, `plugins/themes.ts`, `i18n/`) |
+| Change-approval workflow, audit log, managers per item, low-stock alerts, dark/light/pastel themes, RTL Hebrew with bidi isolation of mixed Hebrew/English text | as before (`change_requests.py`, `audit.py`, `inventory.py`, `plugins/themes.ts`, `i18n/`, `utils/bidi.ts`) |
 
 The full HTTP + event contract is in [`docs/CONTRACT.md`](docs/CONTRACT.md).
 

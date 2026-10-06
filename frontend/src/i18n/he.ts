@@ -1,7 +1,6 @@
 // Hebrew (עברית) messages — mirrors the structure of en.ts exactly.
 export default {
   $vuetify: {}, // filled from vuetify/locale at build time (see i18n/index.ts)
-
   common: {
     appName: 'Lattice',
     tagline: 'ניהול מלאי',
@@ -49,6 +48,7 @@ export default {
     minutesAgo: 'לפני {n} דק׳',
     hoursAgo: 'לפני {n} שע׳',
     daysAgo: 'לפני {n} ימים',
+    noResults: 'אין תוצאות',
   },
 
   appbar: {
@@ -167,6 +167,28 @@ export default {
       status: 'סטטוס',
       quantity: 'כמות',
     },
+    auditAction: {
+      create: 'נוצר',
+      update: 'עודכן',
+      delete: 'נמחק',
+      move: 'הועבר',
+      link: 'קושר',
+      unlink: 'נותק',
+      state_change: 'שינוי סטטוס',
+      template_create: 'תבנית נוצרה',
+      template_update: 'תבנית נערכה',
+      template_delete: 'תבנית נמחקה',
+      field_group_create: 'קבוצת שדות נוצרה',
+      field_group_update: 'קבוצת שדות נערכה',
+      field_group_delete: 'קבוצת שדות נמחקה',
+      desiccator_update: 'הדסיקטור שונה',
+      user_create: 'משתמש נוצר',
+      user_update: 'משתמש עודכן',
+      user_delete: 'משתמש נמחק',
+      change_request_submit: 'הוגשה בקשה',
+      change_request_approve: 'בקשה אושרה',
+      change_request_reject: 'בקשה נדחתה',
+    },
   },
 
   auth: {
@@ -225,6 +247,7 @@ export default {
     createdAt: 'נוצר',
     updatedAt: 'עודכן',
     quantity: 'כמות',
+    template: 'תבנית',
   },
 
   items: {
@@ -394,6 +417,8 @@ export default {
       submit: 'קישור',
       parentAny: 'פריט מכיל *',
       noParents: 'אין פריט שיכול להכיל את זה — התבנית שלו לא מופיעה בתכולת אף תבנית.',
+      noParentItems: 'אין כרגע פריט שיכול להכיל אותו. הוא מתאים לפריטים מהתבניות: {names} — צרו אחד קודם.',
+      noParentTemplates: 'אף תבנית עדיין לא כוללת את התבנית הזו בתכולתה — הוסיפו אותה קודם לתבנית מכלול או מערך.',
     },
   },
 
@@ -445,7 +470,7 @@ export default {
     removed: 'הסף הוסר',
     removeTitle: 'להסיר את הסף?',
     remove: 'הסרה',
-    availableExplainer: 'זמין = כרטיסים חופשיים במיקום של הדסיקטור בסטטוס בנוי או תקין. ספי המלאי וההתראות עוקבים אחרי מספר זה.',
+    availableExplainer: 'זמין = כרטיסים במיקום של הדסיקטור בסטטוס בנוי או תקין — חופשיים או מורכבים בתוך מכלול שנמצא שם. ספי המלאי וההתראות עוקבים אחרי מספר זה.',
     defineDesiccator: 'מיקומי הדסיקטור',
     onlyLow: 'מתחת לסף',
     setMin: 'הגדרה',
@@ -463,6 +488,7 @@ export default {
       faulty: 'תקולים',
       total: 'סה"כ יחידות',
     },
+    assembledInDesiccator: 'מתוכם {n} מורכבים',
   },
 
   cr: {
@@ -773,7 +799,7 @@ export default {
     linksOf: 'הקישורים של {value}',
     linksHint: 'הקישורים דו־כיווניים: קישור צוות לתעשייה מציג את הצוות גם אצל התעשייה.',
     linksSaved: 'הקישורים נשמרו',
-    desiccatorExplainer: 'סמנו את המיקומים שמרכיבים את הדסיקטור. כרטיס חופשי באחד מהם בסטטוס בנוי או תקין נחשב מלאי זמין; כרטיסים במקומות אחרים בשימוש.',
+    desiccatorExplainer: 'סמנו את המיקומים שמרכיבים את הדסיקטור. כרטיס באחד מהם — חופשי או בתוך מכלול שנמצא שם — נמצא בדסיקטור; אלה שבסטטוס בנוי או תקין נחשבים מלאי זמין. כרטיסים במקומות אחרים בשימוש.',
     desiccatorCount: '{n} מיקומים בדסיקטור',
     desiccatorSaved: 'הדסיקטור עודכן',
   },
@@ -816,6 +842,13 @@ export default {
       graph: 'גרף',
       history: 'היסטוריה',
     },
+    duplicate: 'שכפול',
+    duplicated: 'התבנית "{name}" נוצרה',
+    duplicateReason: 'עותק של התבנית "{name}"',
+    limitAtLeast: 'לפחות {min}',
+    limitExactly: 'בדיוק {n}',
+    limitRange: '{min}–{max}',
+    limitNone: 'ללא הגבלה',
   },
 
   detail: {
@@ -885,6 +918,18 @@ export default {
     docNameOptional: 'שם (רשות)',
     unlinkWhere: 'איפה הוא עכשיו? (רשות)',
     unlinkWhereHint: 'השאירו ריק: נשאר ב{where}. בחרו מיקום בדסיקטור כדי להחזיר למלאי.',
+    insideOf: 'בתוך',
+    incomplete: 'לא שלם',
+    linkToParent: 'קישור לפריט אב',
+    changeParent: 'החלפת פריט אב',
+    noParentTemplates: 'אף תבנית מכלול או מערך לא כוללת את "{name}" בתכולתה, ולכן עדיין אין למה לקשר אותו. הוסיפו אותו קודם לתכולה של תבנית.',
+    openTemplates: 'פתיחת התבנית',
+    composition: 'תכולה לפי תבנית',
+    inside: 'בפנים',
+    allowed: 'מותר',
+    missingN: 'חסרים {n}',
+    full: 'מלא',
+    ok: 'תקין',
   },
 
   themes: {
@@ -954,6 +999,21 @@ export default {
       physical: 'מיקום ומצב',
       files: 'קבצים',
     },
+    duplicateTitle: 'שכפול "{name}"',
+    duplicateHint: 'הכול מועתק — שדות, ערכי רשימה, ערכי תבנית, תכולה והמגבלות שלה, קבצים משותפים. שנו כל מה שצריך; לתבנית החדשה נדרשים שם וקידומת מספר סידורי משלה.',
+    copyName: '{name} (עותק)',
+    prefixPlaceholder: 'ABC',
+    patternPlaceholder: 'XX-#####',
+    limitsTitle: 'כמה מכל אחד',
+    limitsHint: 'לכל פריט מהתבנית הזו: המינימום הופך אותו לשלם, את המקסימום אי אפשר לעבור. השאירו מקסימום ריק ללא הגבלה.',
+    minCount: 'מינימום',
+    maxCount: 'מקסימום',
+    noLimit: 'ללא הגבלה',
+    maxBelowMin: 'המקסימום קטן מהמינימום',
+    filesCopiedHint: 'הקבצים של התבנית המקורית יועתקו בשמירה.',
+    moveUp: 'הזזה למעלה',
+    moveDown: 'הזזה למטה',
+    fieldSettings: 'הגדרות שדה',
   },
 
   fieldInput: {
@@ -968,5 +1028,33 @@ export default {
     noOptions: 'אין מה לבחור',
     optionsHint: 'הקלידו ערך והקישו Enter',
     parentHint: 'מוצגים רק פריטים שהתבנית שלהם יכולה להכיל פריט זה.',
+    datePlaceholder: 'בחרו תאריך',
+  },
+
+  fieldGroups: {
+    tab: 'קבוצות שדות',
+    explainer: 'קבוצת שדות היא סט שדות בעל שם שחוזרים עליו בבניית תבניות — טוענים אותו לתבנית בלחיצה אחת. הטעינה מעתיקה את השדות, כך שעריכת קבוצה לעולם לא משנה תבניות קיימות.',
+    new: 'קבוצת שדות חדשה',
+    editTitle: 'עריכת "{name}"',
+    editHint: 'הגדירו את השדות כמו בתבנית. ההתאמה של שדה לתבנית מסוימת נבדקת כששומרים את התבנית.',
+    name: 'שם הקבוצה',
+    nameRequired: 'תנו לקבוצה שם',
+    fieldCount: '{n} שדות',
+    noneYet: 'אין עדיין קבוצות שדות',
+    noneYetHint: 'צרו כאן קבוצה, או שמרו את השדות של תבנית כקבוצה מתוך עורך התבניות.',
+    searchPlaceholder: 'חיפוש לפי שם קבוצה או שדה…',
+    saved: 'קבוצת השדות "{name}" נשמרה',
+    deleted: 'קבוצת השדות נמחקה',
+    deleteTitle: 'מחיקת קבוצת שדות',
+    deleteMsg: 'למחוק את קבוצת השדות "{name}"? תבניות שכבר נבנו ממנה שומרות על השדות שלהן.',
+    load: 'טעינת קבוצת שדות',
+    loadN: 'טעינה ({n})',
+    pickTitle: 'טעינת קבוצות שדות',
+    pickHint: 'בחרו אחת או יותר; שדות שכבר קיימים בתבנית ידולגו.',
+    loaded: 'נוספו {n} שדות',
+    loadedSkipped: 'נוספו {n} שדות; דולגו (כבר קיימים או לא מותרים כאן): {skipped}',
+    saveAs: 'שמירת השדות כקבוצה',
+    saveHint: '{n} השדות שלמטה יהפכו לקבוצה לשימוש חוזר בקטלוג.',
+    defaultName: 'שדות {name}',
   },
 }

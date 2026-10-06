@@ -195,7 +195,7 @@ onMounted(load)
                 {{ item.full_name.split(' ').map((p: string) => p[0]).slice(0, 2).join('') }}
               </span>
             </v-avatar>
-            <span class="font-weight-medium">{{ item.full_name }}</span>
+            <span class="font-weight-medium"><bdi>{{ item.full_name }}</bdi></span>
             <v-chip v-if="item.id === auth.userId" size="x-small" variant="tonal">{{ $t('users.you') }}</v-chip>
           </div>
         </template>

@@ -7,7 +7,7 @@ import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import { formatDate, timeAgo } from '@/constants'
+import { TYPE_COLORS, auditActionLabel, formatDate, timeAgo } from '@/constants'
 import type { AuditOut, InventorySummary, ThresholdOut } from '@/api/types'
 
 const router = useRouter()
@@ -32,27 +32,27 @@ const stats = computed<Stat[]>(() => {
   const s = summary.value
   if (!s) return []
   return [
-    { label: t('dash.stats.setups'), value: s.setups, icon: 'mdi-server', color: 'deep-purple', to: '/setups' },
+    { label: t('dash.stats.setups'), value: s.setups, icon: 'mdi-server', color: TYPE_COLORS.setup, to: '/setups' },
     {
       label: t('dash.stats.assemblies'),
       value: s.assemblies,
       icon: 'mdi-cpu-64-bit',
-      color: 'teal-darken-1',
+      color: TYPE_COLORS.assembly,
       to: '/assemblies',
     },
-    { label: t('dash.stats.cards'), value: s.cards, icon: 'mdi-memory', color: 'blue-darken-1', to: '/cards' },
+    { label: t('dash.stats.cards'), value: s.cards, icon: 'mdi-memory', color: TYPE_COLORS.card, to: '/cards' },
     {
       label: t('dash.stats.cardsInUse'),
       value: s.cards_in_use,
       icon: 'mdi-power-plug',
-      color: 'green-darken-1',
+      color: 'success',
       to: '/cards',
     },
     {
       label: t('dash.stats.cardsAvailable'),
       value: s.cards_available,
       icon: 'mdi-water-off',
-      color: 'cyan-darken-2',
+      color: 'info',
       to: '/inventory',
     },
     { label: t('dash.stats.faultyItems'), value: s.faulty_items, icon: 'mdi-alert', color: 'error' },
@@ -60,14 +60,14 @@ const stats = computed<Stat[]>(() => {
       label: t('dash.stats.pendingRequests'),
       value: s.pending_change_requests,
       icon: 'mdi-file-swap-outline',
-      color: 'amber-darken-2',
+      color: 'secondary',
       to: '/change-requests',
     },
     {
       label: t('dash.stats.lowStockAlerts'),
       value: s.low_stock_alerts,
       icon: 'mdi-alert-decagram',
-      color: 'orange-darken-3',
+      color: 'warning',
       to: '/inventory',
     },
   ]
@@ -141,8 +141,8 @@ onMounted(load)
                 <v-icon :icon="stat.icon" size="26" />
               </v-avatar>
               <div>
-                <div class="text-h5 font-weight-bold">{{ stat.value }}</div>
-                <div class="text-caption text-medium-emphasis">{{ stat.label }}</div>
+                <div class="text-h5 font-weight-bold"><bdi>{{ stat.value }}</bdi></div>
+                <div class="text-caption text-medium-emphasis"><bdi>{{ stat.label }}</bdi></div>
               </div>
             </v-card-text>
           </v-card>
@@ -169,7 +169,7 @@ onMounted(load)
                     <v-icon icon="mdi-memory" />
                   </v-avatar>
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ t.name }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ t.name }}</bdi></v-list-item-title>
                 <v-list-item-subtitle>
                   {{ $t('dash.inStock', { current: t.current_quantity, min: t.min_quantity }) }}
                 </v-list-item-subtitle>
@@ -214,12 +214,12 @@ onMounted(load)
                   </v-avatar>
                 </template>
                 <v-list-item-title class="font-weight-medium">
-                  {{ a.item_name || a.action }}
+                  {{ a.item_name || auditActionLabel(a.action) }}
                 </v-list-item-title>
                 <template #append>
                   <div class="text-caption text-medium-emphasis text-end">
                     <div>{{ timeAgo(a.created_at) }}</div>
-                    <div v-if="a.user_name">{{ a.user_name }}</div>
+                    <div v-if="a.user_name"><bdi>{{ a.user_name }}</bdi></div>
                   </div>
                 </template>
               </v-list-item>

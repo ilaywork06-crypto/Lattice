@@ -19,7 +19,7 @@ import {
   TYPE_LABELS,
   formatDate,
 } from '@/constants'
-import type { ItemType, TemplateCreate, TemplateSummary } from '@/api/types'
+import type { ItemType, TemplateCreate, TemplateOut, TemplateSummary } from '@/api/types'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -65,6 +65,7 @@ const headers = computed(() => {
     { title: t('groups.units'), key: 'counts.total', align: 'center', width: 100 },
     { title: t('fields.updatedAt'), key: 'updated_at', width: 130 },
   )
+  if (auth.canPropose) h.push({ title: '', key: 'actions', sortable: false, width: 56, align: 'end' })
   return h
 })
 
@@ -75,8 +76,22 @@ function relationNames(tp: TemplateSummary): string[] {
 
 watch(tab, (v) => router.replace({ query: { ...route.query, type: v } }))
 
-// ── create (direct or proposal) ──
+// ── create (direct or proposal); duplicate = create prefilled from a template ──
 const editorOpen = ref(false)
+const duplicateFrom = ref<TemplateOut | null>(null)
+const duplicateOpen = computed({
+  get: () => !!duplicateFrom.value,
+  set: (v: boolean) => {
+    if (!v) duplicateFrom.value = null
+  },
+})
+async function startDuplicate(tp: TemplateSummary) {
+  try {
+    duplicateFrom.value = await templatesApi.get(tp.id)
+  } catch (e) {
+    ui.error(e)
+  }
+}
 const proposeOpen = ref(false)
 const proposeCtx = ref<ProposeContext | null>(null)
 
@@ -87,6 +102,7 @@ async function onSubmit(payload: TemplateCreate | Partial<TemplateCreate>) {
       const created = await templatesApi.create(body)
       ui.success(t('templates.created'))
       editorOpen.value = false
+      duplicateFrom.value = null
       router.push(`/templates/${created.id}`)
     } catch (e) {
       ui.error(e)
@@ -94,6 +110,7 @@ async function onSubmit(payload: TemplateCreate | Partial<TemplateCreate>) {
     return
   }
   editorOpen.value = false
+  duplicateFrom.value = null
   proposeCtx.value = {
     action: 'template_create',
     itemType: body.type,
@@ -163,9 +180,9 @@ onMounted(load)
         @click:row="(_: unknown, ctx: any) => router.push(`/templates/${ctx.item.id}`)"
       >
         <template #item.name="{ item }">
-          <div class="font-weight-medium">{{ item.name }}</div>
+          <div class="font-weight-medium"><bdi>{{ item.name }}</bdi></div>
           <div v-if="item.description" class="text-caption text-medium-emphasis text-truncate" style="max-width: 360px">
-            {{ item.description }}
+            <bdi>{{ item.description }}</bdi>
           </div>
         </template>
         <template #item.serial_prefix="{ item }">
@@ -178,7 +195,7 @@ onMounted(load)
         </template>
         <template #item.relations="{ item }">
           <div class="d-flex flex-wrap gap-1">
-            <v-chip v-for="n in relationNames(item).slice(0, 3)" :key="n" size="x-small" variant="tonal">{{ n }}</v-chip>
+            <v-chip v-for="n in relationNames(item).slice(0, 3)" :key="n" size="x-small" variant="tonal"><bdi>{{ n }}</bdi></v-chip>
             <v-chip v-if="relationNames(item).length > 3" size="x-small" variant="text">
               +{{ relationNames(item).length - 3 }}
             </v-chip>
@@ -187,6 +204,16 @@ onMounted(load)
         </template>
         <template #item.counts.total="{ item }">
           <v-chip size="small" variant="tonal" color="primary">{{ item.counts.total }}</v-chip>
+        </template>
+        <template #item.actions="{ item }">
+          <v-btn
+            icon="mdi-content-copy"
+            size="small"
+            variant="text"
+            :title="$t('templates.duplicate')"
+            :aria-label="$t('templates.duplicate')"
+            @click.stop="startDuplicate(item)"
+          />
         </template>
         <template #item.updated_at="{ item }">
           <span class="text-caption">{{ formatDate(item.updated_at) }}</span>
@@ -200,6 +227,12 @@ onMounted(load)
     <TemplateEditorDialog
       v-model="editorOpen"
       :type="tab"
+      :direct="auth.canDirectEdit"
+      @submit="onSubmit"
+    />
+    <TemplateEditorDialog
+      v-model="duplicateOpen"
+      :duplicate-from="duplicateFrom"
       :direct="auth.canDirectEdit"
       @submit="onSubmit"
     />

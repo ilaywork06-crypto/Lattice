@@ -142,7 +142,7 @@ onMounted(loadHints)
                     @click="fill(hint)"
                   >
                     <v-icon start :icon="hint.password ? 'mdi-account-key' : 'mdi-account'" size="14" />
-                    {{ hint.full_name }} · {{ ROLE_LABELS[hint.role] }}
+                    <bdi>{{ hint.full_name }}</bdi> · {{ ROLE_LABELS[hint.role] }}
                   </v-chip>
                 </div>
                 <p class="text-center text-caption text-medium-emphasis mt-3">
@@ -160,8 +160,8 @@ onMounted(loadHints)
 <style scoped>
 .login-bg {
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(91, 110, 245, 0.22), transparent 60%),
-    radial-gradient(900px 500px at 110% 10%, rgba(0, 188, 212, 0.18), transparent 55%);
+    radial-gradient(1200px 600px at 10% -10%, rgba(var(--v-theme-primary), 0.22), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgba(var(--v-theme-accent), 0.18), transparent 55%);
 }
 .theme-toggle {
   position: absolute;

@@ -137,6 +137,39 @@ async function onEditSubmit(payload: TemplateCreate | Partial<TemplateCreate>) {
   proposeOpen.value = true
 }
 
+// ── duplicate (a new template prefilled from this one) ──
+const duplicateOpen = ref(false)
+async function onDuplicateSubmit(payload: TemplateCreate | Partial<TemplateCreate>) {
+  const body = payload as TemplateCreate
+  if (auth.canDirectEdit) {
+    try {
+      const created = await templatesApi.create(body)
+      ui.success(t('templates.duplicated', { name: created.name }))
+      duplicateOpen.value = false
+      router.push(`/templates/${created.id}`)
+    } catch (e) {
+      ui.error(e)
+    }
+    return
+  }
+  duplicateOpen.value = false
+  proposeCtx.value = {
+    action: 'template_create',
+    itemType: body.type,
+    payload: body as unknown as Record<string, unknown>,
+    targetName: body.name,
+    reason: t('templates.duplicateReason', { name: tpl.value?.name ?? '' }),
+  }
+  proposeOpen.value = true
+}
+
+function limitLabel(min: number, max: number | null): string {
+  if (!min && max == null) return ''
+  if (max == null) return t('templates.limitAtLeast', { min })
+  if (min === max) return t('templates.limitExactly', { n: min })
+  return t('templates.limitRange', { min, max })
+}
+
 async function remove() {
   if (!tpl.value) return
   deleting.value = true
@@ -238,7 +271,7 @@ onMounted(load)
               </v-avatar>
               <div>
                 <div class="d-flex align-center gap-2 flex-wrap">
-                  <h1 class="text-h5 font-weight-bold">{{ tpl.name }}</h1>
+                  <h1 class="text-h5 font-weight-bold"><bdi>{{ tpl.name }}</bdi></h1>
                   <v-chip size="small" variant="outlined" label prepend-icon="mdi-barcode">{{ tpl.serial_prefix }}</v-chip>
                   <v-chip v-if="tpl.card_type" :color="CARD_TYPE_COLORS[tpl.card_type]" size="small" variant="flat" label>
                     {{ CARD_TYPE_LABELS[tpl.card_type] }}
@@ -267,6 +300,9 @@ onMounted(load)
               >
                 {{ auth.canDirectEdit ? $t('templates.newItem') : $t('items.proposeNew') }}
               </v-btn>
+              <v-btn v-if="auth.canPropose" variant="tonal" prepend-icon="mdi-content-copy" @click="duplicateOpen = true">
+                {{ $t('templates.duplicate') }}
+              </v-btn>
               <v-btn v-if="auth.canPropose" color="primary" variant="flat" prepend-icon="mdi-pencil" @click="editorOpen = true">
                 {{ auth.canDirectEdit ? $t('common.edit') : $t('templates.proposeEdit') }}
               </v-btn>
@@ -280,7 +316,7 @@ onMounted(load)
               />
             </div>
           </div>
-          <p v-if="tpl.description" class="text-body-2 mt-4 mb-0">{{ tpl.description }}</p>
+          <p v-if="tpl.description" class="text-body-2 mt-4 mb-0"><bdi>{{ tpl.description }}</bdi></p>
           <div class="d-flex flex-wrap gap-2 mt-4">
             <v-chip v-for="s in ACTIVE_STATES" :key="s" :color="STATE_COLORS[s]" size="small" variant="tonal">
               {{ STATE_LABELS[s] }} · {{ tpl.counts[s as 'built' | 'ok' | 'faulty'] }}
@@ -318,7 +354,7 @@ onMounted(load)
               <tbody>
                 <tr v-for="f in tpl.fields" :key="f.id" :class="f.mode === 'item' ? 'row-grey' : 'row-white'">
                   <td class="font-weight-medium">
-                    {{ f.label }}<span v-if="f.required" class="text-error ms-1">*</span>
+                    <bdi>{{ f.label }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
                     <v-icon v-if="f.mode === 'choice' || f.field_type === 'enum'" icon="mdi-menu-down" size="16" />
                   </td>
                   <td>
@@ -338,7 +374,7 @@ onMounted(load)
                           @click="downloadDoc(d)"
                           @click:close="removeTemplateFile(d)"
                         >
-                          {{ d.name }} <span class="text-medium-emphasis ms-1">{{ formatBytes(d.size_bytes) }}</span>
+                          <bdi>{{ d.name }}</bdi> <span class="text-medium-emphasis ms-1">{{ formatBytes(d.size_bytes) }}</span>
                         </v-chip>
                         <v-file-input
                           v-if="auth.canDirectEdit"
@@ -367,15 +403,18 @@ onMounted(load)
             <v-row>
               <v-col cols="12" md="6">
                 <div class="text-overline text-medium-emphasis mb-2">{{ $t('templates.contains') }}</div>
-                <div v-if="tpl.child_templates.length" class="d-flex flex-wrap gap-2">
+                <div v-if="tpl.children.length" class="d-flex flex-wrap gap-2">
                   <v-chip
-                    v-for="c in tpl.child_templates"
-                    :key="c.id"
-                    :to="`/templates/${c.id}`"
+                    v-for="c in tpl.children"
+                    :key="c.template.id"
+                    :to="`/templates/${c.template.id}`"
                     variant="tonal"
                     color="primary"
                   >
-                    <TypeIcon :type="c.type" :size="16" class="me-1" /> {{ c.name }}
+                    <TypeIcon :type="c.template.type" :size="16" class="me-1" /> <bdi>{{ c.template.name }}</bdi>
+                    <span v-if="limitLabel(c.min_count, c.max_count)" class="text-caption ms-2 opacity-80">
+                      {{ limitLabel(c.min_count, c.max_count) }}
+                    </span>
                   </v-chip>
                 </div>
                 <div v-else class="text-medium-emphasis text-body-2">{{ $t('templates.noChildren') }}</div>
@@ -389,7 +428,7 @@ onMounted(load)
                     :to="`/templates/${p.id}`"
                     variant="tonal"
                   >
-                    <TypeIcon :type="p.type" :size="16" class="me-1" /> {{ p.name }}
+                    <TypeIcon :type="p.type" :size="16" class="me-1" /> <bdi>{{ p.name }}</bdi>
                   </v-chip>
                 </div>
                 <div v-else class="text-medium-emphasis text-body-2">{{ $t('templates.noParents') }}</div>
@@ -413,8 +452,8 @@ onMounted(load)
                 <template #opposite>
                   <span class="text-caption text-medium-emphasis">{{ formatDateTime(a.created_at) }}</span>
                 </template>
-                <div class="font-weight-medium">{{ a.summary }}</div>
-                <div v-if="a.user_name" class="text-caption">— {{ a.user_name }}</div>
+                <div class="font-weight-medium"><bdi>{{ a.summary }}</bdi></div>
+                <div v-if="a.user_name" class="text-caption">— <bdi>{{ a.user_name }}</bdi></div>
               </v-timeline-item>
             </v-timeline>
             <EmptyState v-else icon="mdi-history" :title="$t('audit.noRecords')" />
@@ -423,6 +462,12 @@ onMounted(load)
       </v-card>
 
       <TemplateEditorDialog v-model="editorOpen" :template="tpl" :direct="auth.canDirectEdit" @submit="onEditSubmit" />
+      <TemplateEditorDialog
+        v-model="duplicateOpen"
+        :duplicate-from="tpl"
+        :direct="auth.canDirectEdit"
+        @submit="onDuplicateSubmit"
+      />
       <ItemFormDialog
         v-model="itemOpen"
         mode="create"

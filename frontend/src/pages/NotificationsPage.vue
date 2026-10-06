@@ -136,7 +136,7 @@ onMounted(refresh)
                 </v-avatar>
               </v-badge>
             </template>
-            <v-list-item-title class="font-weight-medium">{{ n.title }}</v-list-item-title>
+            <v-list-item-title class="font-weight-medium"><bdi>{{ n.title }}</bdi></v-list-item-title>
             <!-- A low-stock alert carries its components as data, so it renders
                  as the list of what is actually short rather than a paragraph
                  the reader has to parse. -->
@@ -151,7 +151,7 @@ onMounted(refresh)
                   <v-icon icon="mdi-memory" size="16" class="me-2 text-medium-emphasis" />
                   <!-- The threshold was set on a real card, so the row opens it
                        instead of leaving the reader to search for the name. -->
-                  <span class="font-weight-medium">{{ c.name }}</span>
+                  <span class="font-weight-medium"><bdi>{{ c.name }}</bdi></span>
                   <span v-if="c.version" class="text-medium-emphasis ms-1">v{{ c.version }}</span>
                   <v-chip v-if="c.card_type" size="x-small" variant="tonal" class="ms-2">
                     {{ CARD_TYPE_LABELS[c.card_type] }}
@@ -169,7 +169,7 @@ onMounted(refresh)
                 {{ $t('notif.lowStock.hint') }}
               </v-list-item-subtitle>
             </template>
-            <v-list-item-subtitle v-else>{{ n.body }}</v-list-item-subtitle>
+            <v-list-item-subtitle v-else><bdi>{{ n.body }}</bdi></v-list-item-subtitle>
             <template #append>
               <div class="d-flex align-center gap-2">
                 <span class="text-caption text-medium-emphasis">{{ timeAgo(n.created_at) }}</span>

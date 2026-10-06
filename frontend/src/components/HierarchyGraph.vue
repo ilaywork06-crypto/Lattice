@@ -5,6 +5,7 @@ import { Network } from 'vis-network'
 import { DataSet } from 'vis-data'
 import 'vis-network/styles/vis-network.css'
 import { useI18n } from 'vue-i18n'
+import { useTheme } from 'vuetify'
 import { useThemeStore } from '@/stores/theme'
 import {
   CARD_TYPE_LABELS,
@@ -29,6 +30,7 @@ const props = withDefaults(
 const emit = defineEmits<{ 'node-click': [node: GraphNode] }>()
 
 const themeStore = useThemeStore()
+const vuetifyTheme = useTheme()
 const { t, locale } = useI18n({ useScope: 'global' })
 const container = ref<HTMLDivElement | null>(null)
 const network = shallowRef<Network | null>(null)
@@ -93,6 +95,7 @@ function render() {
     props.data.edges.map((e, i) => ({ id: i, from: e.source, to: e.target })),
   )
   const edgeColor = themeStore.isDark ? '#525873' : '#b4b9cc'
+  const highlight = vuetifyTheme.current.value.colors.primary
   const options = {
     autoResize: true,
     layout: {
@@ -132,7 +135,7 @@ function render() {
     },
     edges: {
       arrows: { to: { enabled: true, scaleFactor: 0.8 } },
-      color: { color: edgeColor, highlight: '#5b6ef5', hover: '#5b6ef5' },
+      color: { color: edgeColor, highlight, hover: highlight },
       smooth: { enabled: true, type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.6 },
       width: 2,
     },
@@ -153,7 +156,7 @@ function render() {
 }
 
 watch(() => [props.data, props.focusId, props.kind], render)
-watch(() => themeStore.isDark, render)
+watch(() => themeStore.current, render)
 watch(locale, render)
 onMounted(render)
 onBeforeUnmount(() => {

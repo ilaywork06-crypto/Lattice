@@ -220,6 +220,18 @@ class TemplateFieldIn(BaseModel):
     required: bool = False
     config: dict = Field(default_factory=dict)
     fixed_value: Any = None
+    # Creating only (duplicating a template): copy the files of this fixed
+    # files field of another template into the new field.
+    copy_files_from: int | None = None
+
+
+class TemplateChildIn(BaseModel):
+    """One allowed child template and how many units of it one item holds."""
+
+    template_id: int
+    min_count: int = Field(default=0, ge=0)
+    # None = no upper limit.
+    max_count: int | None = Field(default=None, ge=1)
 
 
 class TemplateCreate(BaseModel):
@@ -229,7 +241,12 @@ class TemplateCreate(BaseModel):
     serial_prefix: str = Field(min_length=3, max_length=3)
     description: str | None = None
     fields: list[TemplateFieldIn] = Field(default_factory=list)
+    # The allowed contents with their limits; `child_template_ids` is the older
+    # form (no limits) and is ignored when `children` is given.
+    children: list[TemplateChildIn] | None = None
     child_template_ids: list[int] = Field(default_factory=list)
+    # Set when the template is a duplicate of another (recorded in the audit).
+    source_template_id: int | None = None
 
 
 class TemplateUpdate(BaseModel):
@@ -240,6 +257,7 @@ class TemplateUpdate(BaseModel):
     # When given: the template's complete field list after the edit (fields
     # missing from it are removed; `id` marks an existing field).
     fields: list[TemplateFieldIn] | None = None
+    children: list[TemplateChildIn] | None = None
     child_template_ids: list[int] | None = None
 
 
@@ -304,12 +322,56 @@ class TemplateSummary(TemplateBrief):
     updated_at: datetime | None = None
 
 
+class TemplateChildOut(BaseModel):
+    template: TemplateBrief
+    min_count: int = 0
+    max_count: int | None = None
+
+
 class TemplateOut(TemplateSummary):
     fields: list[TemplateFieldOut] = Field(default_factory=list)
+    # The allowed contents with their limits (child_templates without them).
+    children: list[TemplateChildOut] = Field(default_factory=list)
     child_templates: list[TemplateBrief] = Field(default_factory=list)
     parent_templates: list[TemplateBrief] = Field(default_factory=list)
     next_serial: str | None = None
     created_at: datetime | None = None
+
+
+# ─────────────────────────── Field groups ───────────────────────────
+class FieldGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    fields: list[TemplateFieldIn] = Field(default_factory=list)
+
+
+class FieldGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    # When given: the group's complete field list after the edit.
+    fields: list[TemplateFieldIn] | None = None
+
+
+class FieldGroupFieldOut(BaseModel):
+    key: str
+    label: str
+    field_type: FieldType
+    mode: FieldMode
+    required: bool
+    position: int
+    config: dict
+    fixed_value: Any = None
+    fixed_display: Any = None
+    options_display: list[str] = Field(default_factory=list)
+
+
+class FieldGroupOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    fields: list[FieldGroupFieldOut] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 # ─────────────────────────── Items ───────────────────────────
@@ -385,6 +447,8 @@ class ItemListOut(BaseModel):
     project: str | None = None
     team: str | None = None
     children_count: int = 0
+    # Units still missing to reach the template's minimum contents.
+    missing_children: int = 0
     manager_names: list[str] = Field(default_factory=list)
     updated_at: datetime
 
@@ -403,6 +467,15 @@ class ItemUpdate(BaseModel):
     # Only the fields being changed.
     values: dict[str, Any] = Field(default_factory=dict)
     serial: str | None = None
+
+
+class CompositionRow(BaseModel):
+    template: TemplateBrief
+    min_count: int = 0
+    max_count: int | None = None
+    count: int = 0      # units of this template inside (destroyed ones excluded)
+    missing: int = 0    # units still needed to reach min_count
+    is_full: bool = False
 
 
 class ItemOut(BaseModel):
@@ -432,6 +505,11 @@ class ItemOut(BaseModel):
     extra_items: list[ExtraItemOut] = Field(default_factory=list)
     # Templates whose items may be placed inside this one.
     child_templates: list[TemplateBrief] = Field(default_factory=list)
+    # Templates whose items this one may be placed inside.
+    parent_templates: list[TemplateBrief] = Field(default_factory=list)
+    # Per allowed child template: what is inside against the template's limits.
+    composition: list[CompositionRow] = Field(default_factory=list)
+    is_complete: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -542,10 +620,11 @@ class InventoryGroup(BaseModel):
     tracking: CardTracking | None = None
     serial_prefix: str
     total: int            # every unit except destroyed ones
-    available: int        # desiccator + loose + built/ok — what can be built with
-    desiccator: int       # loose at a desiccator location (any non-destroyed state)
+    available: int        # in the desiccator and built/ok — what thresholds watch
+    desiccator: int       # at a desiccator location, loose or assembled
     in_use: int           # loose outside the desiccator
-    assembled: int        # inside an assembly or setup
+    assembled: int        # inside an assembly or setup outside the desiccator
+    assembled_in_desiccator: int = 0  # the part of `desiccator` inside assemblies
     faulty: int
     records: int = 0
     available_serials: list[str] = Field(default_factory=list)

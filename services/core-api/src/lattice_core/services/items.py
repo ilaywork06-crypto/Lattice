@@ -65,7 +65,62 @@ def _descendant_ids(item: Item) -> set[int]:
     return out
 
 
-def validate_link(child: Item, parent: Item) -> None:
+def _units(items, template_id: int) -> int:
+    """Units of one template among ``items`` — destroyed ones take no place."""
+    return sum(
+        (c.quantity or 1)
+        for c in items
+        if c.template_id == template_id and c.state != ItemState.destroyed
+    )
+
+
+def _child_link(parent: Item, template_id: int):
+    return next(
+        (link for link in parent.template.child_links if link.child_template_id == template_id),
+        None,
+    )
+
+
+def check_capacity(parent: Item, contents: list[Item]) -> None:
+    """Refuse contents that exceed a template's maximum for any child template."""
+    for link in parent.template.child_links:
+        if link.max_count is None:
+            continue
+        units = _units(contents, link.child_template_id)
+        if units > link.max_count:
+            raise DomainError(
+                f"'{parent.label}' can hold at most {link.max_count} × "
+                f"'{link.child.name}' — this would make it {units}"
+            )
+
+
+def composition(item: Item) -> list[dict]:
+    """Per allowed child template: what is inside against the template's limits."""
+    rows = []
+    for link in item.template.child_links:
+        count = _units(item.children, link.child_template_id)
+        rows.append({
+            "template": link.child,
+            "min_count": link.min_count,
+            "max_count": link.max_count,
+            "count": count,
+            "missing": max(link.min_count - count, 0),
+            "is_full": link.max_count is not None and count >= link.max_count,
+        })
+    return rows
+
+
+def missing_children(item: Item) -> int:
+    if item.type == ItemType.card:
+        return 0
+    return sum(
+        max(link.min_count - _units(item.children, link.child_template_id), 0)
+        for link in item.template.child_links
+        if link.min_count
+    )
+
+
+def validate_link(child: Item, parent: Item, *, capacity: bool = True) -> None:
     if child.id is not None and child.id == parent.id:
         raise DomainError("An item cannot be linked to itself")
     allowed = _ALLOWED_PARENTS[child.type]
@@ -78,6 +133,9 @@ def validate_link(child: Item, parent: Item) -> None:
         )
     if child.id is not None and parent.id in _descendant_ids(child):
         raise DomainError("That would create a cycle in the hierarchy")
+    if capacity:
+        others = [c for c in parent.children if c is not child and c.id != child.id]
+        check_capacity(parent, [*others, child])
 
 
 def default_desiccator(db: Session) -> Location | None:
@@ -357,6 +415,8 @@ def update_item(db: Session, item: Item, data: dict, user: User) -> Item:
         _write_value(db, item, f, value)
         changed[f.label] = [before, value]
     _enforce_quantity(item)
+    if item.parent is not None and item.state != ItemState.destroyed:
+        check_capacity(item.parent, list(item.parent.children))
 
     serial = data.get("serial")
     if serial is not None and str(serial).strip().upper() != item.serial:
@@ -434,20 +494,23 @@ def move_item(
 
 
 # ─────────────────────────── link / unlink ───────────────────────────
-def link_item(db: Session, child: Item, parent: Item, user: User) -> Item:
-    validate_link(child, parent)
+def link_item(
+    db: Session, child: Item, parent: Item, user: User, *, capacity: bool = True
+) -> Item:
+    validate_link(child, parent, capacity=capacity)
     child.parent_id = parent.id
     child.parent = parent
     # Assembled items inherit the container's location — and so does everything
     # already inside the child (a container drags its whole contents).
+    # A container with no location leaves its contents with none either — they
+    # are wherever it is, so they can't stay "in the desiccator" on their own.
     cascaded: list[int] = []
-    if parent.location_id is not None:
-        child.location_id = parent.location_id
-        for cid in _descendant_ids(child):
-            desc = db.get(Item, cid)
-            if desc is not None:
-                desc.location_id = parent.location_id
-                cascaded.append(cid)
+    child.location_id = parent.location_id
+    for cid in _descendant_ids(child):
+        desc = db.get(Item, cid)
+        if desc is not None and desc.location_id != parent.location_id:
+            desc.location_id = parent.location_id
+            cascaded.append(cid)
     record_audit(
         db,
         item=child,
@@ -477,14 +540,15 @@ def set_children(db: Session, parent: Item, child_ids: list[int], user: User) ->
         child = db.get(Item, cid)
         if child is None:
             raise DomainError(f"Item #{cid} not found")
-        validate_link(child, parent)
+        validate_link(child, parent, capacity=False)
         to_add.append(child)
     to_remove = [c for c in list(parent.children) if c.id not in set(desired)]
+    check_capacity(parent, [c for c in parent.children if c.id in set(desired)] + to_add)
 
     for child in to_remove:
         unlink_item(db, child, user)
     for child in to_add:
-        link_item(db, child, parent, user)
+        link_item(db, child, parent, user, capacity=False)
 
     if to_add or to_remove:
         record_audit(
@@ -546,6 +610,9 @@ def change_state(
         )
 
     item.state = new_state
+    if old_state == ItemState.destroyed and item.parent is not None:
+        # A destroyed unit took no place in its container; back in service it does.
+        check_capacity(item.parent, list(item.parent.children))
     db.add(StateHistory(item_id=item.id, state=new_state, note=note, changed_by=user.id))
     record_audit(
         db,

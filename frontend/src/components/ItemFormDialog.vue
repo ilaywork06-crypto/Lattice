@@ -280,7 +280,7 @@ const dialogTitle = computed(() => {
               <div class="text-overline text-medium-emphasis mb-1">{{ $t('itemForm.fromTemplate') }}</div>
               <div class="d-flex flex-wrap gap-2">
                 <v-chip v-for="f in fixedFields" :key="f.id" size="small" variant="outlined" label>
-                  <span class="text-medium-emphasis me-1">{{ f.label }}:</span> {{ display(f) }}
+                  <span class="text-medium-emphasis me-1"><bdi>{{ f.label }}</bdi>:</span> {{ display(f) }}
                 </v-chip>
               </div>
             </div>

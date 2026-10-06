@@ -1,4 +1,5 @@
 import { createI18n } from 'vue-i18n'
+import { isolateParams } from '@/utils/bidi'
 import { en as vuetifyEn, he as vuetifyHe } from 'vuetify/locale'
 import en from './en'
 import he from './he'
@@ -50,6 +51,15 @@ export const i18n = createI18n({
     he: { ...he, $vuetify: vuetifyHe },
   },
 })
+
+// Interpolated values (names, serials, server messages) are bidi-isolated, so a
+// Hebrew sentence quoting an English name — or the reverse — reads correctly.
+// Patched before the plugin is installed, so `$t` in templates gets it too.
+{
+  const composer = i18n.global as unknown as { t: (...args: unknown[]) => string }
+  const translate = composer.t
+  composer.t = (...args: unknown[]) => translate(...isolateParams(args))
+}
 
 // Ensure <html dir/lang> is correct on first paint.
 applyDocumentLocale(initialLocale())

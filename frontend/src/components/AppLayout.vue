@@ -92,7 +92,7 @@ function toggleDrawer() {
     :rail="rail && mdAndUp"
     :permanent="mdAndUp"
     :temporary="!mdAndUp"
-    color="surface"
+    color="nav"
     width="264"
     expand-on-hover
   >
@@ -124,7 +124,7 @@ function toggleDrawer() {
     </template>
   </v-navigation-drawer>
 
-  <v-app-bar flat color="surface" border="b">
+  <v-app-bar flat color="app-bar" border="b">
     <v-app-bar-nav-icon @click="toggleDrawer" />
     <BrandLogo :size="26" class="ms-1" />
     <v-toolbar-title class="font-weight-bold flex-grow-0 ms-2 me-4">Lattice</v-toolbar-title>
@@ -233,7 +233,7 @@ function toggleDrawer() {
       <template #activator="{ props }">
         <v-btn v-bind="props" variant="text" class="ms-1 px-2">
           <v-avatar color="primary" size="34" class="me-2">
-            <span class="text-body-2 font-weight-bold text-white">{{ auth.initials }}</span>
+            <span class="text-body-2 font-weight-bold">{{ auth.initials }}</span>
           </v-avatar>
           <div class="d-none d-sm-flex flex-column align-start" style="line-height: 1.1">
             <span class="text-body-2 font-weight-medium">{{ auth.fullName }}</span>
@@ -245,7 +245,7 @@ function toggleDrawer() {
       <v-card min-width="240" rounded="lg">
         <v-card-text class="d-flex align-center gap-3">
           <v-avatar color="primary" size="42">
-            <span class="text-body-1 font-weight-bold text-white">{{ auth.initials }}</span>
+            <span class="text-body-1 font-weight-bold">{{ auth.initials }}</span>
           </v-avatar>
           <div>
             <div class="text-subtitle-2">{{ auth.fullName }}</div>

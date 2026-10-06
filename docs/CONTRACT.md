@@ -37,7 +37,7 @@ runs the very same service functions a manager would.
 - `CardType`: `copied | house | white | factory | commercial` (formerly `unique` → `copied`, `company` → `house`)
 - `CardTracking`: `quantity | serial` — derived from `CardType` (`commercial` → `quantity`, the rest → `serial`)
 - `ItemState`: `built | ok | faulty | destroyed` — every new item is `built` unless its template's status field says otherwise
-- `StorageStatus`: `assembled | in_use | desiccator` — **derived**, never stored (see Inventory)
+- `StorageStatus`: `desiccator | assembled | in_use` — **derived**, never stored (see Inventory): `desiccator` = at a desiccator location (loose *or* assembled), `assembled` = inside an item elsewhere, `in_use` = loose elsewhere
 - `UserRole`: `viewer | editor | manager`
 - `ChangeStatus`: `pending | approved | rejected`
 - `ChangeAction`: `create | update | delete | move | link | unlink | state_change | template_create | template_update`
@@ -80,10 +80,12 @@ Per-type rules:
 - `GET /templates?type=&card_type=&search=` (viewer+) → `TemplateSummary[]`
   `TemplateSummary = { id, type, name, card_type, serial_prefix, tracking, description, counts{built,ok,faulty,total,destroyed}, child_template_ids[], parent_template_ids[], field_count, updated_at }`
   `counts` are units per state (sums of `quantity`); `total` **excludes destroyed**.
-- `GET /templates/{id}` → `TemplateOut` = summary + `fields: TemplateFieldOut[]`, `child_templates[]`, `parent_templates[]`, `next_serial`, `created_at`.
+- `GET /templates/{id}` → `TemplateOut` = summary + `fields: TemplateFieldOut[]`, `children: [{ template{brief}, min_count, max_count }]`, `child_templates[]`, `parent_templates[]`, `next_serial`, `created_at`.
   `TemplateFieldOut = { id, key, label, field_type, mode, required, position, config, fixed_value, fixed_display, options_display[], files[] }` (`*_display` are readable names for stored ids).
-- `POST /templates` (manager) `TemplateCreate = { type, name, card_type?, serial_prefix, description?, fields: TemplateFieldIn[], child_template_ids[] }` → `TemplateOut`.
-  `TemplateFieldIn = { id?, key?, label, field_type, mode, required, config, fixed_value? }`.
+- `POST /templates` (manager) `TemplateCreate = { type, name, card_type?, serial_prefix, description?, fields: TemplateFieldIn[], children?: TemplateChildIn[], child_template_ids[], source_template_id? }` → `TemplateOut`.
+  `TemplateFieldIn = { id?, key?, label, field_type, mode, required, config, fixed_value?, copy_files_from? }`.
+  `TemplateChildIn = { template_id, min_count = 0, max_count = null }` — how many units of that template one item holds: at least `min_count` for the item to be *complete*, never more than `max_count` (`null` = no limit). `child_template_ids` is the older form without limits; it is ignored when `children` is sent, and on `PATCH` it keeps the limits of the ids it lists.
+  **Duplicating** a template is a create prefilled from another: `source_template_id` is recorded in the audit, and `copy_files_from` on a fixed files field copies that field's files (each gets its own stored copy).
 - `PATCH /templates/{id}` (manager) — any of the above except `type`. `fields`, when sent, is the **complete** list after the edit (`id` marks an existing field; missing ones are removed). Changes **propagate**: a fixed system value (e.g. managers) is rewritten on every item; switching a field from fixed to per-item copies the old value into each item.
 - `DELETE /templates/{id}` (manager) → 204; 400 while any item was made from it.
 - `POST /templates/{id}/fields/{field_id}/files` (manager) multipart `file` → `DocumentOut` (fixed files fields).
@@ -94,7 +96,13 @@ Latin letters, unique per type; a card template needs a `card_type`, other
 types must not have one; children: a setup may contain assembly and card
 templates, an assembly card templates (each pair at most once); a template
 can't be removed from a container's list while items of it sit inside items of
-that container.
+that container, and a maximum can't be lowered below what an item already holds.
+
+### Field groups (catalog)
+Named, reusable sets of field definitions. Loading one into the template editor
+**copies** its fields; templates never stay linked to a group.
+- `GET /field-groups?search=` (viewer+) → `FieldGroupOut[] = { id, name, description, fields: [{ key, label, field_type, mode, required, position, config, fixed_value, fixed_display, options_display[] }], created_at, updated_at }`. `search` matches the group name, description or a field's name.
+- `GET /field-groups/{id}`, `POST /field-groups` `{ name, description?, fields: TemplateFieldIn[] }`, `PATCH /field-groups/{id}` (any of those; `fields` = the complete list), `DELETE /field-groups/{id}` — writes are manager-only. Names are unique (case-insensitive); fields are validated like a template's.
 
 ## Serials
 
@@ -110,8 +118,9 @@ prefix (or the prefix the item was issued under) and is **unique system-wide**
 ### Items
 - `GET /items` → `ItemListOut[]`. Query: `type, template_id, state, card_type, storage_status, location_id, parent_id, unassigned(bool), include_destroyed(bool=true), child_of_template, parent_of_template, search, limit(≤5000), offset`.
   `child_of_template=T`: items whose template may be placed inside template T; `parent_of_template=T`: items whose template may contain T.
-  `ItemListOut = { id, type, template_id, name, serial, state, card_type, quantity, storage_status, parent_id, parent_label, location_id, location_name, industry, project, team, children_count, manager_names[], updated_at }`
-- `GET /items/{id}` → `ItemOut = { id, type, template{brief}, name, serial, state, card_type, tracking, quantity, storage_status, parent_id, location_id, location, parent{brief}, children[brief], industry, project, team ({id,value}), responsible, managers[], fields: ItemFieldOut[], state_history[], documents[], extra_items[], child_templates[], created_at, updated_at }`
+  `ItemListOut = { id, type, template_id, name, serial, state, card_type, quantity, storage_status, parent_id, parent_label, location_id, location_name, industry, project, team, children_count, missing_children, manager_names[], updated_at }`
+- `GET /items/{id}` → `ItemOut = { id, type, template{brief}, name, serial, state, card_type, tracking, quantity, storage_status, parent_id, location_id, location, parent{brief}, children[brief], industry, project, team ({id,value}), responsible, managers[], fields: ItemFieldOut[], state_history[], documents[], extra_items[], child_templates[], parent_templates[], composition[], is_complete, created_at, updated_at }`
+  `composition` = one row per allowed child template: `{ template{brief}, min_count, max_count, count, missing, is_full }` (`count` in units, destroyed ones excluded); `is_complete` = nothing missing.
   `ItemFieldOut = { field_id, key, label, field_type, mode, required, config, value, display, missing }` — every field of the template, with the effective value (`fixed` ones from the template).
 - `POST /items` (manager) `ItemCreate = { template_id(req), values{key: value}, serial?, child_ids[] }` → `ItemOut`.
   `values` holds the template's `item`/`choice` fields by key (a `choice` field left out gets its first value). Sending a `fixed` field, an unknown key, an invalid value or leaving a required field empty → 400 with `errors: [{field, label, error}]` listing **every** problem. A new card with no location goes to the first desiccator location.
@@ -119,7 +128,7 @@ prefix (or the prefix the item was issued under) and is **unique system-wide**
 - `DELETE /items/{id}` (manager) → 204 (its contents are unlinked, not deleted).
 - `POST /items/bulk` (manager) `{ action: move|state_change|delete|link|unlink, item_ids[req], location_id?, parent_id?, state?, note? }` → `{ processed, failed, errors[] }`. **Atomic**.
 - `POST /items/{id}/move` (manager) `{ location_id, note? }` → `ItemOut` (cascades to descendants). **A linked item cannot be moved** (400): move its container, or unlink it first.
-- `POST /items/{id}/link` (manager) `{ parent_id }` → `ItemOut`. Allowed only if the parent's template lists the child's template; the child's subtree takes the parent's location.
+- `POST /items/{id}/link` (manager) `{ parent_id }` → `ItemOut`. Allowed only if the parent's template lists the child's template and the link stays within that template's `max_count`; the child's subtree takes the parent's location. The same limit applies to `PUT …/children` (judged on the end state), to creating with `child_ids`, to raising a linked commercial card's quantity and to bringing a destroyed linked card back into service.
 - `PUT /items/{id}/children` (manager) `{ child_ids[] }` → `ItemOut` — the container's contents, as the end state.
 - `POST /items/{id}/unlink` (manager) `{ location_id? }` → `ItemOut`. It stays at the container's location unless `location_id` says where it now is.
 - `POST /items/{id}/state` (manager) `{ state, note? }` → `ItemOut`. Note **required** into/out of `faulty`.
@@ -143,13 +152,13 @@ prefix (or the prefix the item was issued under) and is **unique system-wide**
 
 ### Inventory (§7, §12)
 All figures are **sums of `Item.quantity`**. Definitions:
-- **desiccator** — a loose card (no parent) at a location with `is_desiccator`;
-- **available** — desiccator stock in state `built` or `ok`: what can be built with now;
-- **in use** — loose, elsewhere; **assembled** — inside an item; **destroyed** cards count nowhere.
+- **desiccator** — a card at a location with `is_desiccator`. The desiccator is a *place*: a card assembled into something that sits there is in it too;
+- **available** — desiccator stock in state `built` or `ok`;
+- **in use** — loose, elsewhere; **assembled** — inside an item elsewhere; **destroyed** cards count nowhere.
 
 - `GET /inventory/summary` → `{ setups, assemblies, cards, cards_in_use, cards_desiccator, cards_available, faulty_items, pending_change_requests, low_stock_alerts, templates }`.
 - `GET /inventory/cards?card_type=` → `InventoryGroup[]` — one per **card template**:
-  `{ template_id, name, card_type, tracking, serial_prefix, total, available, desiccator, in_use, assembled, faulty, records, available_serials[], min_quantity, is_low }`.
+  `{ template_id, name, card_type, tracking, serial_prefix, total, available, desiccator, in_use, assembled, assembled_in_desiccator, faulty, records, available_serials[], min_quantity, is_low }` (`assembled_in_desiccator` = the part of `desiccator` inside assemblies).
 - `GET /inventory/desiccator?card_type=` — the groups with desiccator stock.
 - `GET /inventory/thresholds` / `GET /inventory/low-stock` → `ThresholdOut[] = { id, template_id, name, card_type, tracking, min_quantity, editor_email, current_quantity, is_low }` where `current_quantity` is the **available** stock.
 - `POST /inventory/thresholds` (editor+) `{ template_id, min_quantity, editor_email? }` → `ThresholdOut` — sets (or replaces) the template's threshold.
@@ -225,6 +234,11 @@ migrations existed is converted once, in a single transaction, by
 serials, the old serial kept in a field, states/card types mapped, pending
 proposals closed). Enums are checked VARCHARs (not native types) so a
 vocabulary can change with one migration.
+
+| Revision | What |
+|---|---|
+| `0001` | The template-driven model |
+| `0002` | `template_children.min_count/max_count` (existing rows: 0 .. unlimited); `field_groups`, `field_group_fields` |
 
 ## First sign-in
 

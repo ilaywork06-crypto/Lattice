@@ -26,6 +26,7 @@ from lattice_core.models import (
 )
 from lattice_core.schemas import (
     CatalogRef,
+    CompositionRow,
     DocumentOut,
     ItemBrief,
     ItemFieldOut,
@@ -34,6 +35,7 @@ from lattice_core.schemas import (
     LocationOut,
     StateHistoryOut,
     TemplateBrief,
+    TemplateChildOut,
     TemplateCounts,
     TemplateFieldOut,
     TemplateOut,
@@ -143,6 +145,14 @@ def template_out(db: Session, t: ItemTemplate) -> TemplateOut:
         fields=fields,
         child_templates=[template_brief(c) for c in t.child_templates],
         parent_templates=[template_brief(p) for p in t.parent_templates],
+        children=[
+            TemplateChildOut(
+                template=template_brief(link.child),
+                min_count=link.min_count,
+                max_count=link.max_count,
+            )
+            for link in t.child_links
+        ],
         next_serial=serials_svc.next_serial(db, t),
         created_at=t.created_at,
     )
@@ -185,6 +195,10 @@ def item_fields(db: Session, item: Item) -> list[ItemFieldOut]:
 def item_out(db: Session, item: Item) -> ItemOut:
     t = item.template
     general_docs = [d for d in item.documents if d.field_id is None]
+    composition = [
+        CompositionRow(**{**row, "template": template_brief(row["template"])})
+        for row in items_svc.composition(item)
+    ]
     return ItemOut(
         id=item.id,
         type=item.type,
@@ -211,6 +225,9 @@ def item_out(db: Session, item: Item) -> ItemOut:
         documents=[DocumentOut.model_validate(d) for d in general_docs],
         extra_items=list(item.extra_items),
         child_templates=[template_brief(c) for c in t.child_templates],
+        parent_templates=[template_brief(p) for p in t.parent_templates],
+        composition=composition,
+        is_complete=not any(row.missing for row in composition),
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -235,6 +252,7 @@ def item_list_out(i: Item) -> ItemListOut:
         project=i.project.value if i.project else None,
         team=i.team.value if i.team else None,
         children_count=len(i.children),
+        missing_children=items_svc.missing_children(i),
         manager_names=[m.full_name for m in i.managers],
         updated_at=i.updated_at,
     )

@@ -133,6 +133,9 @@ def delete_option(db: Session, option: CatalogOption) -> None:
             + ", ".join(f"'{n}'" for n in templates)
             + "; remove it there first or deactivate it instead."
         )
+    from lattice_core.services.field_groups import forget_reference
+
+    forget_reference(db, {_FIELD_TYPE_FOR[option.category]}, option.id)
     db.delete(option)
 
 

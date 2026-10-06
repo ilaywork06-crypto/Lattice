@@ -97,6 +97,13 @@ def _allowed_values(db: Session, f: TemplateField) -> list[str]:
     return []
 
 
+def _child_hint(link) -> str:
+    lo, hi = link.min_count, link.max_count
+    if hi is None:
+        return f"{link.child.name}" + (f" — at least {lo}" if lo else "")
+    return f"{link.child.name} — " + (f"exactly {lo}" if lo == hi else f"{lo} to {hi}")
+
+
 def _hint(db: Session, f: TemplateField) -> str:
     parts = [f"Type: {f.field_type.value}", "Required" if f.required else "Optional"]
     pattern = (f.config or {}).get("pattern")
@@ -159,8 +166,8 @@ def build_template(
         ]
         fields = import_fields(tpl)
         headers += [(f.label, _hint(db, f)) for f in fields]
-        if tpl.child_templates:
-            names = ", ".join(c.name for c in tpl.child_templates)
+        if tpl.child_links:
+            names = ", ".join(_child_hint(link) for link in tpl.child_links)
             headers.append((CONTENTS_HEADER, f"Serials of items to place inside ({names})"))
         ws.append([h for h, _ in headers])
         for col, (_, hint) in enumerate(headers, start=1):
