@@ -349,7 +349,7 @@ onMounted(async () => {
           <v-card-text>
             <div class="d-flex align-start gap-2">
               <div class="flex-grow-1 overflow-hidden">
-                <div class="text-subtitle-1 font-weight-bold text-truncate">{{ tp.name }}</div>
+                <div class="text-subtitle-1 font-weight-bold text-truncate"><bdi>{{ tp.name }}</bdi></div>
                 <div class="d-flex flex-wrap align-center gap-2 mt-1">
                   <v-chip
                     v-if="tp.card_type"
@@ -399,7 +399,7 @@ onMounted(async () => {
     <v-card v-if="selected" variant="flat" border class="mt-6">
       <v-card-title class="d-flex flex-wrap align-center gap-2 pa-4">
         <v-icon :icon="icon" color="primary" />
-        <span class="text-subtitle-1 font-weight-bold">{{ selected.name }}</span>
+        <span class="text-subtitle-1 font-weight-bold"><bdi>{{ selected.name }}</bdi></span>
         <v-chip size="small" variant="outlined" label>{{ selected.serial_prefix }}</v-chip>
         <v-spacer />
         <v-btn size="small" variant="text" prepend-icon="mdi-shape-outline" :to="`/templates/${selected.id}`">
@@ -483,13 +483,13 @@ onMounted(async () => {
         </template>
         <template #item.location_name="{ item }">
           <span v-if="item.location_name">
-            <v-icon icon="mdi-map-marker" size="14" class="me-1" />{{ item.location_name }}
+            <v-icon icon="mdi-map-marker" size="14" class="me-1" /><bdi>{{ item.location_name }}</bdi>
           </span>
           <span v-else class="text-medium-emphasis">—</span>
         </template>
         <template #item.parent_label="{ item }">
           <a v-if="item.parent_id" href="#" @click.prevent.stop="router.push(`/items/${item.parent_id}`)">
-            {{ item.parent_label }}
+            <bdi>{{ item.parent_label }}</bdi>
           </a>
           <span v-else class="text-medium-emphasis">—</span>
         </template>

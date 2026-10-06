@@ -168,6 +168,8 @@ export interface TemplateFieldIn {
   required: boolean
   config: FieldConfig
   fixed_value?: unknown
+  /** Creating only (duplicating): copy the files of this template field. */
+  copy_files_from?: number | null
 }
 
 export interface TemplateFieldOut {
@@ -213,8 +215,23 @@ export interface TemplateSummary extends TemplateBrief {
   updated_at: string | null
 }
 
+/** One allowed child template and how many units of it one item holds. */
+export interface TemplateChildIn {
+  template_id: number
+  min_count: number
+  /** null = no upper limit. */
+  max_count: number | null
+}
+
+export interface TemplateChildOut {
+  template: TemplateBrief
+  min_count: number
+  max_count: number | null
+}
+
 export interface TemplateOut extends TemplateSummary {
   fields: TemplateFieldOut[]
+  children: TemplateChildOut[]
   child_templates: TemplateBrief[]
   parent_templates: TemplateBrief[]
   next_serial: string | null
@@ -228,10 +245,41 @@ export interface TemplateCreate {
   serial_prefix: string
   description?: string | null
   fields: TemplateFieldIn[]
-  child_template_ids: number[]
+  children: TemplateChildIn[]
+  /** Set when the template is a duplicate of another. */
+  source_template_id?: number | null
 }
 
-export type TemplateUpdate = Partial<Omit<TemplateCreate, 'type'>>
+export type TemplateUpdate = Partial<Omit<TemplateCreate, 'type' | 'source_template_id'>>
+
+// ---- Field groups ---------------------------------------------------------
+export interface FieldGroupField {
+  key: string
+  label: string
+  field_type: FieldType
+  mode: FieldMode
+  required: boolean
+  position: number
+  config: FieldConfig
+  fixed_value: unknown
+  fixed_display: unknown
+  options_display: string[]
+}
+
+export interface FieldGroupOut {
+  id: number
+  name: string
+  description: string | null
+  fields: FieldGroupField[]
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface FieldGroupIn {
+  name: string
+  description?: string | null
+  fields: TemplateFieldIn[]
+}
 
 // ---- Items ----------------------------------------------------------------
 export interface CatalogRef {
@@ -268,6 +316,8 @@ export interface ItemListOut {
   project: string | null
   team: string | null
   children_count: number
+  /** Units still missing to reach the template's minimum contents. */
+  missing_children: number
   manager_names: string[]
   updated_at: string
 }
@@ -329,8 +379,22 @@ export interface ItemOut {
   documents: DocumentOut[]
   extra_items: ExtraItemOut[]
   child_templates: TemplateBrief[]
+  /** Templates whose items this one may be placed inside. */
+  parent_templates: TemplateBrief[]
+  /** Per allowed child template: what is inside against the template's limits. */
+  composition: CompositionRow[]
+  is_complete: boolean
   created_at: string
   updated_at: string
+}
+
+export interface CompositionRow {
+  template: TemplateBrief
+  min_count: number
+  max_count: number | null
+  count: number
+  missing: number
+  is_full: boolean
 }
 
 export interface ItemCreate {
@@ -482,11 +546,15 @@ export interface InventoryGroup {
   tracking: CardTracking | null
   serial_prefix: string
   total: number
-  /** Built/ok, loose, at a desiccator location — what can be built with. */
+  /** Built/ok at a desiccator location — what thresholds watch. */
   available: number
+  /** At a desiccator location, loose or assembled. */
   desiccator: number
   in_use: number
+  /** Inside an item outside the desiccator. */
   assembled: number
+  /** The part of `desiccator` sitting inside assemblies. */
+  assembled_in_desiccator: number
   faulty: number
   records: number
   available_serials: string[]

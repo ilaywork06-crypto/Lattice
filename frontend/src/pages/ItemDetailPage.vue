@@ -176,6 +176,17 @@ const proposeCtx = ref<ProposeContext | null>(null)
 const actionError = ref('')
 const actionLoading = ref(false)
 
+function openLink() {
+  actionError.value = ''
+  linkOpen.value = true
+}
+
+function limitText(min: number, max: number | null): string {
+  if (max == null) return min ? t('templates.limitAtLeast', { min }) : t('templates.limitNone')
+  if (min === max) return t('templates.limitExactly', { n: min })
+  return t('templates.limitRange', { min, max })
+}
+
 // Viewers may ask for a location change and nothing else.
 const canProposeMove = computed(() => auth.isAuthenticated)
 
@@ -549,7 +560,7 @@ onMounted(loadItem)
               </v-avatar>
               <div>
                 <div class="d-flex align-center gap-2 flex-wrap">
-                  <h1 class="text-h5 font-weight-bold">{{ item.name }}</h1>
+                  <h1 class="text-h5 font-weight-bold"><bdi>{{ item.name }}</bdi></h1>
                   <v-chip size="small" variant="outlined" label prepend-icon="mdi-barcode" class="font-mono">
                     {{ item.serial }}
                   </v-chip>
@@ -562,8 +573,17 @@ onMounted(loadItem)
                   <v-chip v-if="item.card_type" :color="CARD_TYPE_COLORS[item.card_type]" size="x-small" variant="flat" label>
                     {{ CARD_TYPE_LABELS[item.card_type] }}
                   </v-chip>
+                  <span v-if="item.parent">
+                    <v-icon icon="mdi-link-variant" size="14" />
+                    <RouterLink :to="`/items/${item.parent.id}`" class="text-medium-emphasis">
+                      {{ $t('detail.insideOf') }} <bdi>{{ item.parent.name }} · {{ item.parent.serial }}</bdi>
+                    </RouterLink>
+                  </span>
+                  <v-chip v-if="!item.is_complete" color="warning" size="x-small" variant="tonal" prepend-icon="mdi-alert-outline">
+                    {{ $t('detail.incomplete') }}
+                  </v-chip>
                   <span v-if="item.location">
-                    <v-icon icon="mdi-map-marker" size="14" /> {{ item.location.name }}
+                    <v-icon icon="mdi-map-marker" size="14" /> <bdi>{{ item.location.name }}</bdi>
                     <v-icon v-if="item.location.is_desiccator" icon="mdi-water-off" size="14" color="cyan-darken-2" />
                   </span>
                   <v-chip
@@ -625,8 +645,8 @@ onMounted(loadItem)
                   <v-list-item
                     v-if="item.type !== 'setup'"
                     prepend-icon="mdi-link-variant"
-                    :title="$t('items.actions.link')"
-                    @click="(actionError = ''), (linkOpen = true)"
+                    :title="item.parent ? $t('detail.changeParent') : $t('items.actions.link')"
+                    @click="openLink"
                   />
                   <v-list-item
                     v-if="item.parent"
@@ -669,7 +689,7 @@ onMounted(loadItem)
       <v-card variant="flat" border>
         <v-tabs v-model="tab" color="primary" show-arrows>
           <v-tab v-for="tb in tabs" :key="tb.value" :value="tb.value" :prepend-icon="tb.icon">
-            {{ tb.label }}
+            <bdi>{{ tb.label }}</bdi>
           </v-tab>
         </v-tabs>
         <v-divider />
@@ -683,7 +703,7 @@ onMounted(loadItem)
                   <v-icon :icon="FIELD_TYPE_ICONS[f.field_type]" size="20" class="text-medium-emphasis" />
                   <div class="overflow-hidden">
                     <div class="text-caption text-medium-emphasis">
-                      {{ f.label }}<span v-if="f.required" class="text-error">*</span>
+                      <bdi>{{ f.label }}</bdi><span v-if="f.required" class="text-error">*</span>
                       <v-icon v-if="f.mode === 'fixed'" icon="mdi-lock-outline" size="12" class="ms-1" :title="$t('detail.fromTemplate')" />
                     </div>
                     <div v-if="fieldFiles(f).length" class="d-flex flex-wrap gap-1 mt-1">
@@ -694,13 +714,44 @@ onMounted(loadItem)
                         prepend-icon="mdi-paperclip"
                         @click="downloadDoc(d)"
                       >
-                        {{ d.name }}
+                        <bdi>{{ d.name }}</bdi>
                       </v-chip>
                     </div>
                     <div v-else class="text-body-2 font-weight-medium text-break" :class="{ 'text-warning': f.missing }">
-                      {{ f.missing ? $t('detail.missing') : fieldText(f) }}
+                      <bdi>{{ f.missing ? $t('detail.missing') : fieldText(f) }}</bdi>
                     </div>
                   </div>
+                  <v-spacer />
+                  <v-btn
+                    v-if="auth.canPropose && f.field_type === 'parent'"
+                    icon="mdi-link-variant"
+                    size="x-small"
+                    variant="text"
+                    color="primary"
+                    :title="item.parent ? $t('detail.changeParent') : $t('detail.linkToParent')"
+                    :aria-label="item.parent ? $t('detail.changeParent') : $t('detail.linkToParent')"
+                    @click="openLink"
+                  />
+                  <v-btn
+                    v-else-if="canProposeMove && f.field_type === 'location' && !item.parent"
+                    icon="mdi-map-marker-radius"
+                    size="x-small"
+                    variant="text"
+                    color="primary"
+                    :title="$t('items.actions.move')"
+                    :aria-label="$t('items.actions.move')"
+                    @click="(actionError = ''), (moveOpen = true)"
+                  />
+                  <v-btn
+                    v-else-if="auth.canPropose && f.field_type === 'status'"
+                    icon="mdi-swap-horizontal"
+                    size="x-small"
+                    variant="text"
+                    color="primary"
+                    :title="$t('items.actions.changeState')"
+                    :aria-label="$t('items.actions.changeState')"
+                    @click="(actionError = ''), (stateOpen = true)"
+                  />
                 </div>
               </v-col>
               <v-col cols="12" sm="6" md="4">
@@ -727,6 +778,85 @@ onMounted(loadItem)
 
           <!-- Hierarchy -->
           <v-window-item value="hierarchy" class="pa-5">
+            <!-- Where this item sits, and the way to put it somewhere -->
+            <div v-if="item.type !== 'setup'" class="parent-bar d-flex align-center flex-wrap gap-3 mb-4">
+              <v-icon icon="mdi-link-variant" color="primary" />
+              <template v-if="item.parent">
+                <span class="text-medium-emphasis">{{ $t('detail.parent') }}:</span>
+                <RouterLink :to="`/items/${item.parent.id}`" class="text-primary font-weight-medium">
+                  <bdi>{{ item.parent.name }} · {{ item.parent.serial }}</bdi>
+                </RouterLink>
+                <StateChip :state="item.parent.state" />
+              </template>
+              <span v-else class="text-medium-emphasis">{{ $t('detail.noParent') }}</span>
+              <v-spacer />
+              <template v-if="auth.canPropose">
+                <v-btn
+                  size="small"
+                  color="primary"
+                  variant="tonal"
+                  prepend-icon="mdi-link-variant"
+                  :disabled="!item.parent_templates.length"
+                  @click="openLink"
+                >
+                  {{ item.parent ? $t('detail.changeParent') : $t('detail.linkToParent') }}
+                </v-btn>
+                <v-btn
+                  v-if="item.parent"
+                  size="small"
+                  color="warning"
+                  variant="text"
+                  prepend-icon="mdi-link-variant-off"
+                  @click="openUnlink"
+                >
+                  {{ $t('items.actions.unlink') }}
+                </v-btn>
+              </template>
+            </div>
+            <v-alert
+              v-if="item.type !== 'setup' && !item.parent_templates.length"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mb-4"
+            >
+              {{ $t('detail.noParentTemplates', { name: item.template.name }) }}
+              <RouterLink :to="`/templates/${item.template.id}`" class="text-primary">{{ $t('detail.openTemplates') }}</RouterLink>
+            </v-alert>
+
+            <!-- What a container holds against its template's limits -->
+            <div v-if="item.composition.length" class="mb-5">
+              <div class="text-overline text-medium-emphasis mb-2">{{ $t('detail.composition') }}</div>
+              <v-table density="compact" class="border rounded">
+                <thead>
+                  <tr>
+                    <th>{{ $t('fields.template') }}</th>
+                    <th class="text-center">{{ $t('detail.inside') }}</th>
+                    <th class="text-center">{{ $t('detail.allowed') }}</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in item.composition" :key="row.template.id">
+                    <td>
+                      <RouterLink :to="`/templates/${row.template.id}`" class="text-primary">
+                        <bdi>{{ row.template.name }}</bdi>
+                      </RouterLink>
+                    </td>
+                    <td class="text-center font-weight-medium">{{ row.count }}</td>
+                    <td class="text-center text-medium-emphasis">{{ limitText(row.min_count, row.max_count) }}</td>
+                    <td class="text-end">
+                      <v-chip v-if="row.missing" color="warning" size="x-small" variant="tonal">
+                        {{ $t('detail.missingN', { n: row.missing }) }}
+                      </v-chip>
+                      <v-chip v-else-if="row.is_full" color="info" size="x-small" variant="tonal">{{ $t('detail.full') }}</v-chip>
+                      <v-chip v-else color="success" size="x-small" variant="tonal">{{ $t('detail.ok') }}</v-chip>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </div>
+
             <div class="d-flex align-center gap-2 mb-4">
               <v-btn-toggle v-model="hierarchyView" density="comfortable" variant="outlined" mandatory rounded="lg" color="primary">
                 <v-btn value="graph" prepend-icon="mdi-graph-outline">{{ $t('detail.asGraph') }}</v-btn>
@@ -763,35 +893,14 @@ onMounted(loadItem)
                 icon="mdi-map-marker-off-outline"
               >
                 <i18n-t keypath="detail.moveLocked" scope="global">
-                  <template #name><strong>{{ item.name }}</strong></template>
+                  <template #name><strong><bdi>{{ item.name }}</bdi></strong></template>
                   <template #parent>
                     <RouterLink :to="`/items/${item.parent.id}`" class="text-primary">
-                      {{ item.parent.name }} · {{ item.parent.serial }}
+                      <bdi>{{ item.parent.name }} · {{ item.parent.serial }}</bdi>
                     </RouterLink>
                   </template>
                 </i18n-t>
               </v-alert>
-
-              <div class="mb-5">
-                <div class="text-overline text-medium-emphasis mb-2">{{ $t('detail.parent') }}</div>
-                <v-card
-                  v-if="item.parent"
-                  variant="tonal"
-                  class="clickable-row"
-                  @click="router.push(`/items/${item.parent.id}`)"
-                >
-                  <v-card-text class="d-flex align-center gap-3">
-                    <TypeIcon :type="item.parent.type" :size="24" />
-                    <div class="flex-grow-1">
-                      <div class="font-weight-medium">{{ item.parent.name }}</div>
-                      <div class="text-caption text-medium-emphasis">{{ item.parent.serial }}</div>
-                    </div>
-                    <StateChip :state="item.parent.state" />
-                    <v-icon icon="mdi-chevron-right" class="flip-rtl" />
-                  </v-card-text>
-                </v-card>
-                <div v-else class="text-body-2 text-medium-emphasis">{{ $t('detail.noParent') }}</div>
-              </div>
 
               <div class="text-overline text-medium-emphasis mb-2">
                 {{ $t('detail.children', { n: item.children.length }) }}
@@ -802,7 +911,7 @@ onMounted(loadItem)
                     <v-card-text class="d-flex align-center gap-3">
                       <TypeIcon :type="child.type" :size="22" />
                       <div class="flex-grow-1 overflow-hidden">
-                        <div class="font-weight-medium text-truncate">{{ child.name }}</div>
+                        <div class="font-weight-medium text-truncate"><bdi>{{ child.name }}</bdi></div>
                         <div class="text-caption text-medium-emphasis">{{ child.serial }}</div>
                       </div>
                       <StateChip :state="child.state" />
@@ -835,7 +944,7 @@ onMounted(loadItem)
                     {{ $t('detail.by', { name: h.changed_by_name }) }}
                   </span>
                 </div>
-                <div v-if="h.note" class="text-body-2">{{ h.note }}</div>
+                <div v-if="h.note" class="text-body-2"><bdi>{{ h.note }}</bdi></div>
               </v-timeline-item>
             </v-timeline>
             <EmptyState v-else icon="mdi-history" :title="$t('items.stateHistoryEmpty')" :text="$t('detail.historyHint')" />
@@ -860,7 +969,7 @@ onMounted(loadItem)
                 <template #prepend>
                   <v-icon :icon="doc.is_file ? 'mdi-file-download-outline' : 'mdi-link-variant'" color="primary" />
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ doc.name }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ doc.name }}</bdi></v-list-item-title>
                 <v-list-item-subtitle>
                   <v-chip v-if="doc.doc_type" size="x-small" variant="tonal" class="me-2">{{ doc.doc_type }}</v-chip>
                   <span v-if="doc.is_file">{{ formatBytes(doc.size_bytes) }} · {{ formatDateTime(doc.created_at) }}</span>
@@ -907,7 +1016,7 @@ onMounted(loadItem)
               </thead>
               <tbody>
                 <tr v-for="ex in item.extra_items" :key="ex.id">
-                  <td class="font-weight-medium">{{ ex.name }}</td>
+                  <td class="font-weight-medium"><bdi>{{ ex.name }}</bdi></td>
                   <td>{{ ex.company_part_number || '—' }}</td>
                   <td>{{ ex.serial || '—' }}</td>
                   <td>{{ ex.signed_by || '—' }}</td>
@@ -927,8 +1036,8 @@ onMounted(loadItem)
                 <template #opposite>
                   <span class="text-caption text-medium-emphasis">{{ formatDateTime(a.created_at) }}</span>
                 </template>
-                <div class="font-weight-medium">{{ a.summary }}</div>
-                <div v-if="a.user_name" class="text-caption">— {{ a.user_name }}</div>
+                <div class="font-weight-medium"><bdi>{{ a.summary }}</bdi></div>
+                <div v-if="a.user_name" class="text-caption">— <bdi>{{ a.user_name }}</bdi></div>
               </v-timeline-item>
             </v-timeline>
             <EmptyState v-else icon="mdi-clipboard-text-clock-outline" :title="$t('audit.noRecords')" />
@@ -1011,6 +1120,8 @@ onMounted(loadItem)
         :item-id="item.id"
         :item-type="item.type"
         :template-id="item.template.id"
+        :current-parent-id="item.parent_id"
+        :parent-templates="item.parent_templates"
         :error="actionError"
         :loading="actionLoading"
         @confirm="onLinkConfirm"
@@ -1160,5 +1271,10 @@ onMounted(loadItem)
 }
 .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.parent-bar {
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 10px;
+  padding: 10px 14px;
 }
 </style>

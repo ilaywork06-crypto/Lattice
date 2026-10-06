@@ -66,3 +66,40 @@ body {
 [dir='rtl'] .flip-rtl-icon .v-icon {
   transform: scaleX(-1);
 }
+
+/* ── Bidirectional text ──────────────────────────────────────────────────
+   Hebrew and English mix freely (a Hebrew UI showing English part names, a
+   Hebrew name inside an English server message). Each block of user data or
+   message text takes its direction from its own first strong character, while
+   alignment still follows the page; interpolated values are isolated in the
+   translation layer (utils/bidi.ts) and with <bdi> in markup. */
+bdi {
+  unicode-bidi: isolate;
+}
+.v-data-table td,
+.v-table td,
+.v-list-item-title,
+.v-list-item-subtitle,
+.v-card-title,
+.v-card-subtitle,
+.v-alert__content,
+.v-snackbar__content,
+.v-timeline-item__body,
+.v-chip__content,
+.v-field__input,
+.v-field__input input,
+.v-field textarea,
+.v-messages__message,
+.bidi-auto {
+  unicode-bidi: plaintext;
+}
+/* Serials, prefixes, formats and codes are always left-to-right. */
+.font-mono,
+.ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+/* SVG labels can't hold <bdi>; the same isolation through CSS. */
+svg text {
+  unicode-bidi: plaintext;
+}

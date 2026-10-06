@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { changeRequestsApi } from '@/api/services'
+import { changeRequestsApi, templatesApi } from '@/api/services'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
@@ -15,7 +15,7 @@ import {
   formatDateTime,
   timeAgo,
 } from '@/constants'
-import type { ChangeRequestOut, ChangeStatus } from '@/api/types'
+import type { ChangeRequestOut, ChangeStatus, TemplateChildIn, TemplateSummary } from '@/api/types'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -100,6 +100,32 @@ function show(v: unknown): string {
   return String(v)
 }
 
+// Template proposals refer to other templates by id; show their names.
+const templateNames = ref(new Map<number, string>())
+async function loadTemplateNames() {
+  if (templateNames.value.size) return
+  try {
+    const list: TemplateSummary[] = await templatesApi.list()
+    templateNames.value = new Map(list.map((x) => [x.id, x.name]))
+  } catch {
+    // names are a nicety; ids still show
+  }
+}
+watch(selected, (cr) => {
+  if (cr?.action === 'template_create' || cr?.action === 'template_update') void loadTemplateNames()
+})
+const tplName = (id: number) => templateNames.value.get(id) ?? `#${id}`
+function showChildren(children: TemplateChildIn[]): string {
+  return children
+    .map((c) => {
+      const lo = c.min_count ?? 0
+      const hi = c.max_count ?? null
+      const limit = hi == null ? (lo ? ` (≥${lo})` : '') : ` (${lo}–${hi})`
+      return tplName(c.template_id) + limit
+    })
+    .join(', ')
+}
+
 /** The proposal's details, one row per value (an item's `values` are spread out). */
 const payloadRows = computed(() => {
   if (!selected.value) return []
@@ -112,6 +138,14 @@ const payloadRows = computed(() => {
       }
     } else if (k === 'fields' && Array.isArray(v)) {
       rows.push({ key: t('cr.fields'), value: show(v) })
+    } else if (k === 'children' && Array.isArray(v)) {
+      rows.push({ key: t('templates.contains'), value: showChildren(v as TemplateChildIn[]) || '—' })
+    } else if (k === 'child_template_ids' && Array.isArray(v)) {
+      if (!('children' in (selected.value.payload || {}))) {
+        rows.push({ key: t('templates.contains'), value: (v as number[]).map(tplName).join(', ') || '—' })
+      }
+    } else if (k === 'source_template_id' && typeof v === 'number') {
+      rows.push({ key: t('templates.duplicate'), value: tplName(v) })
     } else {
       rows.push({ key: k, value: show(v) })
     }
@@ -172,7 +206,7 @@ onMounted(async () => {
             variant="outlined"
             filter
           >
-            {{ opt.title }}
+            <bdi>{{ opt.title }}</bdi>
           </v-chip>
         </v-chip-group>
         <v-spacer />
@@ -200,17 +234,17 @@ onMounted(async () => {
             </template>
             <v-list-item-title class="font-weight-medium">
               {{ CHANGE_ACTION_LABELS[cr.action] }}
-              <span v-if="cr.item_name">· {{ cr.item_name }}</span>
+              <span v-if="cr.item_name">· <bdi>{{ cr.item_name }}</bdi></span>
               <span v-else-if="cr.item_type">· {{ $t('cr.newOfType', { type: TYPE_LABELS[cr.item_type] }) }}</span>
             </v-list-item-title>
-            <v-list-item-subtitle>{{ cr.description }}</v-list-item-subtitle>
+            <v-list-item-subtitle><bdi>{{ cr.description }}</bdi></v-list-item-subtitle>
             <template #append>
               <div class="d-flex flex-column align-end gap-1">
                 <v-chip :color="CHANGE_STATUS_COLORS[cr.status]" size="small" variant="flat">
                   {{ $t('enums.changeStatus.' + cr.status) }}
                 </v-chip>
                 <span class="text-caption text-medium-emphasis">
-                  {{ cr.proposer?.full_name }} · {{ timeAgo(cr.created_at) }}
+                  <bdi>{{ cr.proposer?.full_name }}</bdi> · {{ timeAgo(cr.created_at) }}
                 </span>
               </div>
             </template>
@@ -252,14 +286,14 @@ onMounted(async () => {
                   href="#"
                   @click.prevent="router.push(`/items/${selected.item_id}`)"
                 >
-                  {{ selected.item_name }}
+                  <bdi>{{ selected.item_name }}</bdi>
                 </a>
                 <a
                   v-else-if="selected.template_id"
                   href="#"
                   @click.prevent="router.push(`/templates/${selected.template_id}`)"
                 >
-                  {{ selected.item_name }}
+                  <bdi>{{ selected.item_name }}</bdi>
                 </a>
                 <span v-else>{{ selected.item_type ? TYPE_LABELS[selected.item_type] : '—' }}</span>
               </div>
@@ -272,9 +306,9 @@ onMounted(async () => {
 
           <v-alert variant="tonal" color="primary" density="comfortable" class="mb-3">
             <div class="text-caption text-medium-emphasis">{{ $t('common.description') }}</div>
-            <div>{{ selected.description }}</div>
+            <div><bdi>{{ selected.description }}</bdi></div>
             <div class="text-caption text-medium-emphasis mt-2">{{ $t('common.reason') }}</div>
-            <div>{{ selected.reason }}</div>
+            <div><bdi>{{ selected.reason }}</bdi></div>
           </v-alert>
 
           <div v-if="payloadRows.length" class="mb-2">
@@ -283,7 +317,7 @@ onMounted(async () => {
               <tbody>
                 <tr v-for="row in payloadRows" :key="row.key">
                   <td class="text-medium-emphasis" style="width: 40%">{{ row.key }}</td>
-                  <td class="font-weight-medium">{{ row.value }}</td>
+                  <td class="font-weight-medium"><bdi>{{ row.value }}</bdi></td>
                 </tr>
               </tbody>
             </v-table>

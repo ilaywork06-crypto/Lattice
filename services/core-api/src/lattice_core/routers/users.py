@@ -9,6 +9,7 @@ from lattice_core.deps import require_manager, require_viewer
 from lattice_core.models import ChangeRequest, FieldMode, FieldType, TemplateField, User, UserRole
 from lattice_core.schemas import UserBrief, UserCreate, UserOut, UserUpdate
 from lattice_core.security import hash_password
+from lattice_core.services import field_groups as field_groups_svc
 from lattice_core.services.audit import record_audit
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -124,6 +125,9 @@ def delete_user(
             ),
         )
     _forget_in_templates(db, user.id)
+    field_groups_svc.forget_reference(
+        db, {FieldType.managers, FieldType.responsible}, user.id
+    )
     record_audit(
         db, action="user.delete", summary=f"Deleted user {user.email}", user=current
     )

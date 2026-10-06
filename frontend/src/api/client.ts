@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios'
+import { stripIsolates } from '@/utils/bidi'
 
 // ---------------------------------------------------------------------------
 // Central axios configuration. Two backends: the core API and the
@@ -32,12 +33,32 @@ export function registerUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn
 }
 
+/** Bidi isolate marks are for display only — never send them as data. */
+function stripDeep(value: unknown): unknown {
+  if (typeof value === 'string') return stripIsolates(value)
+  if (Array.isArray(value)) return value.map(stripDeep)
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, stripDeep(v)]))
+  }
+  return value
+}
+
 function attachInterceptors(instance: AxiosInstance): AxiosInstance {
   instance.interceptors.request.use((config) => {
     const token = getToken()
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    if (config.data instanceof FormData) {
+      const clean = new FormData()
+      for (const [k, v] of Array.from(config.data.entries())) {
+        clean.append(k, typeof v === 'string' ? stripIsolates(v) : v)
+      }
+      config.data = clean
+    } else if (config.data !== undefined) {
+      config.data = stripDeep(config.data)
+    }
+    if (config.params) config.params = stripDeep(config.params)
     return config
   })
 

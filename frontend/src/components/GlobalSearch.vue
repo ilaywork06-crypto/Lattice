@@ -163,7 +163,7 @@ function indexOfHit(hit: SearchHit): number {
                 <template #prepend>
                   <v-icon :icon="hitIcon(hit)" :color="hitColor(hit)" />
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ hit.title }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ hit.title }}</bdi></v-list-item-title>
                 <v-list-item-subtitle v-if="hit.subtitle">{{ hit.subtitle }}</v-list-item-subtitle>
                 <template #append>
                   <StateChip v-if="hit.state" :state="hit.state" />
@@ -188,7 +188,7 @@ function indexOfHit(hit: SearchHit): number {
                 <template #prepend>
                   <v-icon :icon="hitIcon(hit)" :color="hitColor(hit)" />
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ hit.title }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ hit.title }}</bdi></v-list-item-title>
                 <v-list-item-subtitle v-if="hit.subtitle">{{ hit.subtitle }}</v-list-item-subtitle>
                 <template #append>
                   <v-chip size="x-small" variant="tonal">{{ hitBadge(hit) }}</v-chip>
@@ -212,7 +212,7 @@ function indexOfHit(hit: SearchHit): number {
                 <template #prepend>
                   <v-icon :icon="hitIcon(hit)" :color="hitColor(hit)" />
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ hit.title }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ hit.title }}</bdi></v-list-item-title>
                 <v-list-item-subtitle v-if="hit.subtitle">{{ hit.subtitle }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
@@ -233,7 +233,7 @@ function indexOfHit(hit: SearchHit): number {
                 <template #prepend>
                   <v-icon :icon="hitIcon(hit)" :color="hitColor(hit)" />
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ hit.title }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ hit.title }}</bdi></v-list-item-title>
                 <v-list-item-subtitle v-if="hit.subtitle">{{ hit.subtitle }}</v-list-item-subtitle>
                 <template #append>
                   <v-chip size="x-small" variant="tonal">{{ hitBadge(hit) }}</v-chip>

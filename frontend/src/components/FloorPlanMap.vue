@@ -32,7 +32,6 @@ function syncLocal() {
     id: b.id, x: b.x, y: b.y, width: b.width, height: b.height, name: b.name, color: b.color,
   }))
 }
-watch(() => props.buildings, () => { if (!drag.value) syncLocal() }, { immediate: true, deep: true })
 
 const DEFAULT_COLOR = '#5b6ef5'
 const MIN = 4
@@ -60,6 +59,8 @@ interface Drag {
 }
 const drag = ref<Drag | null>(null)
 const draft = ref<{ x: number; y: number; width: number; height: number } | null>(null)
+// After `drag` exists: the immediate run reads it.
+watch(() => props.buildings, () => { if (!drag.value) syncLocal() }, { immediate: true, deep: true })
 
 function byId(id: number) { return local.value.find((b) => b.id === id) }
 

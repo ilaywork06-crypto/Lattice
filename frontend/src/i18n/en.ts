@@ -2,7 +2,6 @@
 // label maps in constants.ts, so translating them here localizes every chip.
 export default {
   $vuetify: {}, // filled from vuetify/locale at build time (see i18n/index.ts)
-
   common: {
     appName: 'Lattice',
     tagline: 'Asset tracking',
@@ -50,6 +49,7 @@ export default {
     minutesAgo: '{n}m ago',
     hoursAgo: '{n}h ago',
     daysAgo: '{n}d ago',
+    noResults: 'No matches',
   },
 
   appbar: {
@@ -168,6 +168,28 @@ export default {
       status: 'Status',
       quantity: 'Quantity',
     },
+    auditAction: {
+      create: 'Created',
+      update: 'Updated',
+      delete: 'Deleted',
+      move: 'Moved',
+      link: 'Linked',
+      unlink: 'Unlinked',
+      state_change: 'State change',
+      template_create: 'Template created',
+      template_update: 'Template edited',
+      template_delete: 'Template deleted',
+      field_group_create: 'Field group created',
+      field_group_update: 'Field group edited',
+      field_group_delete: 'Field group deleted',
+      desiccator_update: 'Desiccator changed',
+      user_create: 'User created',
+      user_update: 'User updated',
+      user_delete: 'User deleted',
+      change_request_submit: 'Proposal submitted',
+      change_request_approve: 'Proposal approved',
+      change_request_reject: 'Proposal rejected',
+    },
   },
 
   auth: {
@@ -226,6 +248,7 @@ export default {
     createdAt: 'Created',
     updatedAt: 'Updated',
     quantity: 'Quantity',
+    template: 'Template',
   },
 
   items: {
@@ -395,6 +418,8 @@ export default {
       submit: 'Link',
       parentAny: 'Container *',
       noParents: 'No item can hold this one — its template is not in any template\'s contents.',
+      noParentItems: 'No item can take it right now. It fits inside items of: {names} — create one first.',
+      noParentTemplates: 'No template lists this one among its contents yet — add it to an assembly or setup template first.',
     },
   },
 
@@ -446,7 +471,7 @@ export default {
     removed: 'Threshold removed',
     removeTitle: 'Remove threshold?',
     remove: 'Remove',
-    availableExplainer: 'Available = loose cards at a desiccator location in state Built or OK. Thresholds and alerts watch this number.',
+    availableExplainer: 'Available = cards at a desiccator location in state Built or OK — loose or assembled into something that sits there. Thresholds and alerts watch this number.',
     defineDesiccator: 'Desiccator locations',
     onlyLow: 'Below minimum',
     setMin: 'set',
@@ -464,6 +489,7 @@ export default {
       faulty: 'Faulty',
       total: 'Total units',
     },
+    assembledInDesiccator: '{n} of them assembled',
   },
 
   cr: {
@@ -538,7 +564,7 @@ export default {
   },
 
   loc: {
-    subtitle: "A stylized floor-plan plotted from each location's coordinates.",
+    subtitle: 'A stylized floor-plan plotted from each location\'s coordinates.',
     addLocation: 'Add location',
     floorPlan: 'Building floor-plan',
     legendEmpty: 'empty',
@@ -774,7 +800,7 @@ export default {
     linksOf: 'Links of {value}',
     linksHint: 'Links are two-way: linking a team to an industry also shows the team on the industry.',
     linksSaved: 'Links saved',
-    desiccatorExplainer: 'Tick the locations that make up the desiccator. A loose card at one of them that is built or OK counts as available stock; cards elsewhere are in use.',
+    desiccatorExplainer: 'Tick the locations that make up the desiccator. A card at one of them — loose or inside an assembly that sits there — is in the desiccator; built or OK ones count as available stock. Cards elsewhere are in use.',
     desiccatorCount: '{n} locations in the desiccator',
     desiccatorSaved: 'Desiccator updated',
   },
@@ -817,6 +843,13 @@ export default {
       graph: 'Graph',
       history: 'History',
     },
+    duplicate: 'Duplicate',
+    duplicated: 'Template "{name}" created',
+    duplicateReason: 'A copy of the template "{name}"',
+    limitAtLeast: 'at least {min}',
+    limitExactly: 'exactly {n}',
+    limitRange: '{min}–{max}',
+    limitNone: 'any number',
   },
 
   detail: {
@@ -886,6 +919,18 @@ export default {
     docNameOptional: 'Name (optional)',
     unlinkWhere: 'Where is it now? (optional)',
     unlinkWhereHint: 'Leave empty: it stays at {where}. Pick a desiccator location to return it to stock.',
+    insideOf: 'Inside',
+    incomplete: 'Incomplete',
+    linkToParent: 'Link to a parent',
+    changeParent: 'Change parent',
+    noParentTemplates: 'No assembly or setup template lists "{name}" among its contents, so there is nothing to link it to yet. Add it to a template\'s contents first.',
+    openTemplates: 'Open the template',
+    composition: 'Contents by template',
+    inside: 'Inside',
+    allowed: 'Allowed',
+    missingN: '{n} missing',
+    full: 'Full',
+    ok: 'OK',
   },
 
   themes: {
@@ -955,6 +1000,21 @@ export default {
       physical: 'Where / what state',
       files: 'Files',
     },
+    duplicateTitle: 'Duplicate "{name}"',
+    duplicateHint: 'Everything is copied — fields, list values, template values, contents and their limits, shared files. Change whatever you need; the new template needs its own name and serial prefix.',
+    copyName: '{name} (copy)',
+    prefixPlaceholder: 'ABC',
+    patternPlaceholder: 'XX-#####',
+    limitsTitle: 'How many of each',
+    limitsHint: 'Per item of this template: the minimum makes it complete, the maximum can never be exceeded. Leave the maximum empty for no limit.',
+    minCount: 'Minimum',
+    maxCount: 'Maximum',
+    noLimit: 'No limit',
+    maxBelowMin: 'The maximum is below the minimum',
+    filesCopiedHint: 'The files of the original template are copied over when you save.',
+    moveUp: 'Move up',
+    moveDown: 'Move down',
+    fieldSettings: 'Field settings',
   },
 
   fieldInput: {
@@ -969,5 +1029,33 @@ export default {
     noOptions: 'Nothing to choose from',
     optionsHint: 'Type a value and press Enter',
     parentHint: 'Only items whose template may contain this one are listed.',
+    datePlaceholder: 'Pick a date',
+  },
+
+  fieldGroups: {
+    tab: 'Field groups',
+    explainer: 'A field group is a named set of fields you reuse when building templates — load it into a template in one click. Loading copies the fields, so editing a group never changes existing templates.',
+    new: 'New field group',
+    editTitle: 'Edit "{name}"',
+    editHint: 'Define the fields as you would on a template. Whether a field fits a particular template is checked when that template is saved.',
+    name: 'Group name',
+    nameRequired: 'Give the group a name',
+    fieldCount: '{n} fields',
+    noneYet: 'No field groups yet',
+    noneYetHint: 'Create one here, or save a template\'s fields as a group from the template editor.',
+    searchPlaceholder: 'Search by group or field name…',
+    saved: 'Field group "{name}" saved',
+    deleted: 'Field group deleted',
+    deleteTitle: 'Delete field group',
+    deleteMsg: 'Delete the field group "{name}"? Templates already built from it keep their fields.',
+    load: 'Load field group',
+    loadN: 'Load ({n})',
+    pickTitle: 'Load field groups',
+    pickHint: 'Pick one or more; fields already in the template are skipped.',
+    loaded: '{n} fields added',
+    loadedSkipped: '{n} fields added; skipped (already there or not allowed here): {skipped}',
+    saveAs: 'Save fields as a group',
+    saveHint: 'The {n} fields below become a reusable group in the catalog.',
+    defaultName: '{name} fields',
   },
 }

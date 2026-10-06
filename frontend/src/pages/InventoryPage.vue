@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // Stock per card template.
 //
-// "Available" — what can be built with right now — is a card that is loose (not
-// inside anything), sits at a location in the desiccator group, and is built or
-// ok. Cards outside the desiccator are presumably in use and don't count, nor do
-// faulty or destroyed ones. Stock thresholds watch exactly that number.
+// "Available" — what can be built with right now — is a card at a location in
+// the desiccator group in state built or ok. The desiccator is a place: a card
+// assembled into something that sits there is in it too. Cards outside the
+// desiccator are presumably in use and don't count, nor do faulty or destroyed
+// ones. Stock thresholds watch exactly that number.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -227,7 +228,7 @@ onMounted(load)
       >
         <template #item.name="{ item }">
           <a href="#" class="font-weight-medium" @click.prevent="router.push(`/cards?template=${item.template_id}`)">
-            {{ item.name }}
+            <bdi>{{ item.name }}</bdi>
           </a>
           <div class="text-caption text-medium-emphasis">
             {{ item.serial_prefix }}<span v-if="item.tracking"> · {{ TRACKING_LABELS[item.tracking] }}</span>
@@ -242,6 +243,12 @@ onMounted(load)
           <v-chip :color="item.is_low ? 'error' : 'success'" size="small" variant="tonal" class="font-weight-bold">
             {{ item.available }}
           </v-chip>
+        </template>
+        <template #item.desiccator="{ item }">
+          {{ item.desiccator }}
+          <div v-if="item.assembled_in_desiccator" class="text-caption text-medium-emphasis">
+            {{ $t('inventory.assembledInDesiccator', { n: item.assembled_in_desiccator }) }}
+          </div>
         </template>
         <template #item.min_quantity="{ item }">
           <a v-if="auth.canPropose" href="#" @click.prevent="openThreshold(item.template_id)">
@@ -293,7 +300,7 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="th in thresholds" :key="th.id">
-            <td class="font-weight-medium">{{ th.name }}</td>
+            <td class="font-weight-medium"><bdi>{{ th.name }}</bdi></td>
             <td class="text-center">{{ th.current_quantity }}</td>
             <td class="text-center">{{ th.min_quantity }}</td>
             <td>{{ th.editor_email || '—' }}</td>

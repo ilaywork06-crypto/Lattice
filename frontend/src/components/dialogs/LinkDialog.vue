@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { itemsApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
 import { TYPE_LABELS } from '@/constants'
-import type { ItemListOut, ItemType } from '@/api/types'
+import type { ItemListOut, ItemType, TemplateBrief } from '@/api/types'
 
 // Parents on offer are exactly the items whose template lists this item's
 // template as allowed contents — a card can go into a setup as well as an
@@ -14,6 +14,10 @@ const props = defineProps<{
   itemId: number
   itemType: ItemType
   templateId: number
+  /** The container it is in now (not offered again). */
+  currentParentId?: number | null
+  /** Templates whose items may hold this one (for the empty-list explanation). */
+  parentTemplates?: TemplateBrief[]
   error?: string
   loading?: boolean
 }>()
@@ -44,7 +48,7 @@ watch(
     try {
       parents.value = (
         await itemsApi.list({ parent_of_template: props.templateId, include_destroyed: false })
-      ).filter((i) => i.id !== props.itemId)
+      ).filter((i) => i.id !== props.itemId && i.id !== props.currentParentId)
     } catch (e) {
       ui.error(e)
     } finally {
@@ -56,6 +60,7 @@ watch(
 const choices = computed(() =>
   parents.value.map((p) => ({
     title: `${p.name} · ${p.serial}`,
+    missing: p.missing_children,
     value: p.id,
     subtitle: `${TYPE_LABELS[p.type]}${p.location_name ? ' · ' + p.location_name : ''}`,
   })),
@@ -81,6 +86,19 @@ function submit() {
       <v-divider />
       <v-card-text class="pa-4">
         <template v-if="itemType !== 'setup'">
+          <v-alert
+            v-if="!loadingList && !parents.length"
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="mb-3"
+          >
+            {{
+              parentTemplates?.length
+                ? $t('dlg.link.noParentItems', { names: parentTemplates.map((p) => p.name).join(', ') })
+                : $t('dlg.link.noParentTemplates')
+            }}
+          </v-alert>
           <v-autocomplete
             v-model="parentId"
             :label="$t('dlg.link.parentAny')"
@@ -94,7 +112,11 @@ function submit() {
             @update:model-value="parentError = false"
           >
             <template #item="{ props: itemProps, item }">
-              <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
+              <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle">
+                <template v-if="item.raw.missing" #append>
+                  <v-chip size="x-small" color="warning" variant="tonal">{{ $t('detail.missingN', { n: item.raw.missing }) }}</v-chip>
+                </template>
+              </v-list-item>
             </template>
           </v-autocomplete>
           <v-alert v-if="error" type="error" variant="tonal" density="compact" :text="error" />

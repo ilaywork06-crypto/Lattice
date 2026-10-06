@@ -6,7 +6,7 @@ import { auditApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import { formatDateTime } from '@/constants'
+import { auditActionLabel, formatDateTime } from '@/constants'
 import type { AuditOut, AuditPeriod } from '@/api/types'
 import { downloadBlob } from '@/utils/download'
 
@@ -162,12 +162,12 @@ onMounted(load)
           >
             {{ item.item_name || `#${item.item_id ?? item.template_id}` }}
           </a>
-          <span v-else-if="item.item_name">{{ item.item_name }}</span>
+          <span v-else-if="item.item_name"><bdi>{{ item.item_name }}</bdi></span>
           <span v-else class="text-medium-emphasis">—</span>
         </template>
         <template #item.action="{ item }">
           <v-chip :color="actionColor(item.action)" size="x-small" variant="tonal">
-            {{ item.action }}
+            {{ auditActionLabel(item.action) }}
           </v-chip>
         </template>
         <template #item.user_name="{ item }">

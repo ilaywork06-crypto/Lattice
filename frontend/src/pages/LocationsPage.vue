@@ -480,7 +480,7 @@ onMounted(() => {
               <template #prepend>
                 <span class="swatch sm me-3" :style="{ background: b.color || DEFAULT_BUILDING_COLOR }" />
               </template>
-              <v-list-item-title>{{ b.name }}</v-list-item-title>
+              <v-list-item-title><bdi>{{ b.name }}</bdi></v-list-item-title>
             </v-list-item>
           </v-list>
           <div v-else class="px-4 pb-4 text-caption text-medium-emphasis">
@@ -495,7 +495,7 @@ onMounted(() => {
           <template v-if="selected">
             <v-card-title class="d-flex align-center gap-2">
               <v-icon icon="mdi-map-marker" color="primary" />
-              <span class="text-subtitle-1 font-weight-bold">{{ selected.name }}</span>
+              <span class="text-subtitle-1 font-weight-bold"><bdi>{{ selected.name }}</bdi></span>
               <v-chip v-if="selected.is_desiccator" size="x-small" color="cyan-darken-2" variant="tonal" prepend-icon="mdi-water-off">
                 {{ $t('fieldInput.desiccator') }}
               </v-chip>
@@ -518,7 +518,7 @@ onMounted(() => {
                 <template #prepend>
                   <TypeIcon :type="it.type" :size="22" />
                 </template>
-                <v-list-item-title class="font-weight-medium">{{ it.name }}</v-list-item-title>
+                <v-list-item-title class="font-weight-medium"><bdi>{{ it.name }}</bdi></v-list-item-title>
                 <v-list-item-subtitle>
                   {{ it.serial }}<span v-if="it.parent_label"> · {{ $t('loc.inside', { parent: it.parent_label }) }}</span>
                 </v-list-item-subtitle>
@@ -551,7 +551,7 @@ onMounted(() => {
         @click:row="(_: unknown, ctx: any) => selectLocation(ctx.item.id)"
       >
         <template #item.name="{ item }">
-          <span class="font-weight-medium">{{ item.name }}</span>
+          <span class="font-weight-medium"><bdi>{{ item.name }}</bdi></span>
         </template>
         <template #item.building="{ item }">{{ item.building || '—' }}</template>
         <template #item.room="{ item }">{{ item.room || '—' }}</template>

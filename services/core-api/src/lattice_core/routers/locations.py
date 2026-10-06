@@ -6,13 +6,14 @@ from sqlalchemy.orm import Session
 
 from lattice_core.database import get_db
 from lattice_core.deps import require_editor, require_manager, require_viewer
-from lattice_core.models import Item, Location, TemplateField, User
+from lattice_core.models import FieldType, Item, Location, TemplateField, User
 from lattice_core.schemas import (
     DesiccatorUpdate,
     LocationCreate,
     LocationOut,
     LocationUpdate,
 )
+from lattice_core.services import field_groups as field_groups_svc
 from lattice_core.services.audit import record_audit
 
 router = APIRouter(prefix="/locations", tags=["locations"])
@@ -146,5 +147,6 @@ def delete_location(
         options = (f.config or {}).get("options")
         if f.field_type.value == "location" and options and loc.id in options:
             f.config = {**f.config, "options": [o for o in options if o != loc.id]}
+    field_groups_svc.forget_reference(db, {FieldType.location}, loc.id)
     db.delete(loc)
     db.commit()

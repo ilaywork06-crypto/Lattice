@@ -97,8 +97,8 @@ async function submit() {
         <v-table v-if="context.summaryLines?.length" density="compact" class="mb-4 rounded border">
           <tbody>
             <tr v-for="line in context.summaryLines" :key="line.label">
-              <td class="text-medium-emphasis" style="width: 40%">{{ line.label }}</td>
-              <td class="font-weight-medium">{{ line.value }}</td>
+              <td class="text-medium-emphasis" style="width: 40%"><bdi>{{ line.label }}</bdi></td>
+              <td class="font-weight-medium"><bdi>{{ line.value }}</bdi></td>
             </tr>
           </tbody>
         </v-table>

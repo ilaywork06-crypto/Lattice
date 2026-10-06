@@ -1,38 +1,22 @@
 <script setup lang="ts">
-// Create or edit a template: its identity (type, name, card type, serial
-// prefix), which templates may sit inside it, and its fields.
-//
-// Field colours follow the spec's legend:
-//   white  — set on the template (shared by every item; "fixed")
-//   white ▾ — a list defined on the template; each item picks (first = default)
-//   grey   — filled in when an item is created
-//   *      — required
+// Create, edit or duplicate a template: its identity (type, name, card type,
+// serial prefix), which templates may sit inside it (and how many of each),
+// and its fields — typed in, or loaded from the catalog's field groups.
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { templatesApi } from '@/api/services'
+import { fieldGroupsApi, templatesApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
-import FieldInput from '@/components/FieldInput.vue'
-import {
-  CARD_TYPES,
-  CARD_TYPE_LABELS,
-  FIELD_MODE_LABELS,
-  FIELD_TYPE_GROUPS,
-  FIELD_TYPE_ICONS,
-  FIELD_TYPE_LABELS,
-  ITEM_TYPES,
-  PER_UNIT_FIELD_TYPES,
-  SYSTEM_FIELD_TYPES,
-  TYPE_LABELS,
-  isQuantityTracked,
-} from '@/constants'
+import { stripIsolates } from '@/utils/bidi'
+import FieldListEditor from '@/components/FieldListEditor.vue'
+import FieldGroupPicker from '@/components/FieldGroupPicker.vue'
+import { CARD_TYPES, CARD_TYPE_LABELS, ITEM_TYPES, SYSTEM_FIELD_TYPES, TYPE_LABELS, isQuantityTracked } from '@/constants'
+import { type FieldRow, cleanFields, rowsFromGroup, rowsFromTemplate } from '@/lib/fieldRows'
 import type {
   CardType,
-  FieldConfig,
-  FieldMode,
-  FieldType,
+  FieldGroupOut,
   ItemType,
+  TemplateChildIn,
   TemplateCreate,
-  TemplateFieldIn,
   TemplateOut,
   TemplateSummary,
 } from '@/api/types'
@@ -40,6 +24,8 @@ import type {
 const props = defineProps<{
   modelValue: boolean
   template?: TemplateOut | null
+  /** Start a new template as a copy of this one (everything stays editable). */
+  duplicateFrom?: TemplateOut | null
   type?: ItemType | null
   /** Managers save directly; editors submit a proposal. */
   direct: boolean
@@ -59,11 +45,7 @@ const open = computed({
   set: (v) => emit('update:modelValue', v),
 })
 const editing = computed(() => !!props.template)
-
-interface FieldRow extends TemplateFieldIn {
-  uid: number
-  expanded: boolean
-}
+const duplicating = computed(() => !editing.value && !!props.duplicateFrom)
 
 const form = reactive<{
   type: ItemType
@@ -71,7 +53,7 @@ const form = reactive<{
   card_type: CardType | null
   serial_prefix: string
   description: string
-  child_template_ids: number[]
+  children: TemplateChildIn[]
   fields: FieldRow[]
 }>({
   type: 'card',
@@ -79,36 +61,30 @@ const form = reactive<{
   card_type: 'house',
   serial_prefix: '',
   description: '',
-  child_template_ids: [],
+  children: [],
   fields: [],
 })
 
-let uid = 0
 const allTemplates = ref<TemplateSummary[]>([])
 const formRef = ref()
 const saving = ref(false)
 
 async function hydrate() {
-  const tpl = props.template
+  const tpl = props.template ?? props.duplicateFrom ?? null
+  const copy = duplicating.value
   Object.assign(form, {
     type: tpl?.type ?? props.type ?? 'card',
-    name: tpl?.name ?? '',
+    name: tpl ? (copy ? stripIsolates(t('tplEditor.copyName', { name: tpl.name })) : tpl.name) : '',
     card_type: tpl ? tpl.card_type : (props.type ?? 'card') === 'card' ? 'house' : null,
-    serial_prefix: tpl?.serial_prefix ?? '',
+    // A prefix is unique per type, so a copy needs its own.
+    serial_prefix: copy ? '' : (tpl?.serial_prefix ?? ''),
     description: tpl?.description ?? '',
-    child_template_ids: tpl?.child_template_ids ?? [],
-    fields: (tpl?.fields ?? []).map((f) => ({
-      uid: ++uid,
-      expanded: false,
-      id: f.id,
-      key: f.key,
-      label: f.label,
-      field_type: f.field_type,
-      mode: f.mode,
-      required: f.required,
-      config: { ...f.config },
-      fixed_value: f.fixed_value,
+    children: (tpl?.children ?? []).map((c) => ({
+      template_id: c.template.id,
+      min_count: c.min_count,
+      max_count: c.max_count,
     })),
+    fields: rowsFromTemplate(tpl?.fields ?? [], copy),
   })
   try {
     allTemplates.value = await templatesApi.list()
@@ -134,82 +110,84 @@ const childChoices = computed(() =>
       subtitle: `${TYPE_LABELS[tp.type]} · ${tp.serial_prefix}`,
     })),
 )
+const templateName = (id: number) => allTemplates.value.find((x) => x.id === id)?.name ?? `#${id}`
 
-// ── field list ──
-const usedSystemTypes = computed(
-  () => new Set(form.fields.map((f) => f.field_type).filter((ft) => SYSTEM_FIELD_TYPES.includes(ft))),
-)
+// The chips pick the templates; each keeps its limits while it stays picked.
+const childIds = computed({
+  get: () => form.children.map((c) => c.template_id),
+  set: (ids: number[]) => {
+    const have = new Map(form.children.map((c) => [c.template_id, c]))
+    form.children = ids.map((id) => have.get(id) ?? { template_id: id, min_count: 0, max_count: null })
+  },
+})
 
-function typeAllowed(ft: FieldType): boolean {
-  if (usedSystemTypes.value.has(ft)) return false
+function setMin(c: TemplateChildIn, v: string) {
+  c.min_count = Math.max(0, Math.floor(Number(v) || 0))
+}
+function setMax(c: TemplateChildIn, v: string) {
+  const n = Math.floor(Number(v))
+  c.max_count = v === '' || v == null || !Number.isFinite(n) || n < 1 ? null : n
+}
+const limitError = (c: TemplateChildIn) =>
+  c.max_count != null && c.max_count < c.min_count ? t('tplEditor.maxBelowMin') : ''
+
+// ── field groups ──
+const pickerOpen = ref(false)
+
+function fits(row: FieldRow, taken: Set<string>): boolean {
+  if (taken.has(row.label.trim().toLowerCase())) return false
+  const ft = row.field_type
+  if (SYSTEM_FIELD_TYPES.includes(ft) && form.fields.some((f) => f.field_type === ft)) return false
   if (ft === 'quantity') return isCard.value && isQuantityTracked(form.card_type)
   if (ft === 'parent') return form.type !== 'setup'
   return true
 }
 
-function addField(ft: FieldType) {
-  const row: FieldRow = {
-    uid: ++uid,
-    expanded: true,
-    id: null,
-    key: null,
-    label: FIELD_TYPE_LABELS[ft],
-    field_type: ft,
-    mode: 'item',
-    required: false,
-    config: ft === 'description' ? { min_length: 8 } : {},
-    fixed_value: null,
+function loadGroups(groups: FieldGroupOut[]) {
+  let added = 0
+  const skipped: string[] = []
+  for (const g of groups) {
+    for (const row of rowsFromGroup(g.fields)) {
+      const taken = new Set(form.fields.map((f) => f.label.trim().toLowerCase()))
+      if (fits(row, taken)) {
+        form.fields.push(row)
+        added++
+      } else {
+        skipped.push(row.label)
+      }
+    }
   }
-  form.fields.push(row)
+  if (skipped.length) ui.warning(t('fieldGroups.loadedSkipped', { n: added, skipped: skipped.join(', ') }))
+  else ui.success(t('fieldGroups.loaded', { n: added }))
 }
 
-function removeField(i: number) {
-  form.fields.splice(i, 1)
+const saveGroupOpen = ref(false)
+const groupForm = reactive({ name: '', description: '' })
+const savingGroup = ref(false)
+
+function openSaveGroup() {
+  if (!form.fields.length) return
+  groupForm.name = form.name.trim() ? stripIsolates(t('fieldGroups.defaultName', { name: form.name.trim() })) : ''
+  groupForm.description = ''
+  saveGroupOpen.value = true
 }
 
-function moveField(i: number, delta: number) {
-  const j = i + delta
-  if (j < 0 || j >= form.fields.length) return
-  const [row] = form.fields.splice(i, 1)
-  form.fields.splice(j, 0, row)
-}
-
-function modesFor(ft: FieldType): FieldMode[] {
-  if (PER_UNIT_FIELD_TYPES.includes(ft)) return ft === 'parent' ? ['item'] : ['choice', 'item']
-  if (ft === 'files') return ['fixed', 'item']
-  return ['fixed', 'choice', 'item']
-}
-
-function setMode(row: FieldRow, mode: FieldMode) {
-  row.mode = mode
-  if (mode !== 'fixed') row.fixed_value = null
-  if (mode !== 'choice' && row.field_type !== 'enum') {
-    const { options: _drop, ...rest } = row.config as FieldConfig
-    row.config = rest
+async function saveGroup() {
+  if (!groupForm.name.trim()) return
+  savingGroup.value = true
+  try {
+    await fieldGroupsApi.create({
+      name: groupForm.name.trim(),
+      description: groupForm.description.trim() || null,
+      fields: cleanFields(form.fields, false).map(({ copy_files_from: _c, ...f }) => f),
+    })
+    ui.success(t('fieldGroups.saved', { name: groupForm.name.trim() }))
+    saveGroupOpen.value = false
+  } catch (e) {
+    ui.error(e)
+  } finally {
+    savingGroup.value = false
   }
-}
-
-const MODE_ICONS: Record<FieldMode, string> = {
-  fixed: 'mdi-square-outline',
-  choice: 'mdi-menu-down',
-  item: 'mdi-square',
-}
-
-const enumOptions = (row: FieldRow) =>
-  computed({
-    get: () => ((row.config.options ?? []) as string[]),
-    set: (v: string[]) => {
-      row.config = { ...row.config, options: v }
-    },
-  })
-
-function optionsModel(row: FieldRow) {
-  return computed({
-    get: () => (row.config.options ?? []) as unknown[],
-    set: (v: unknown) => {
-      row.config = { ...row.config, options: (v as unknown[]) ?? [] }
-    },
-  })
 }
 
 // ── submit ──
@@ -218,24 +196,15 @@ const prefixRules = [
 ]
 const nameRules = [(v: string) => !!v?.trim() || t('common.required')]
 
-function cleanFields(): TemplateFieldIn[] {
-  return form.fields.map((f) => ({
-    id: f.id ?? null,
-    key: f.key ?? null,
-    label: f.label.trim(),
-    field_type: f.field_type,
-    mode: f.mode,
-    required: f.required,
-    config: f.config,
-    fixed_value: f.mode === 'fixed' ? f.fixed_value : null,
-  }))
-}
-
 async function submit() {
   const res = await formRef.value?.validate()
   if (res && !res.valid) return
   if (form.fields.some((f) => !f.label.trim())) {
     ui.warning(t('tplEditor.fieldNameRequired'))
+    return
+  }
+  if (form.children.some((c) => limitError(c))) {
+    ui.warning(t('tplEditor.maxBelowMin'))
     return
   }
   const payload: TemplateCreate = {
@@ -244,8 +213,8 @@ async function submit() {
     card_type: isCard.value ? form.card_type : null,
     serial_prefix: form.serial_prefix.trim().toUpperCase(),
     description: form.description.trim() || null,
-    fields: cleanFields(),
-    child_template_ids: form.child_template_ids,
+    fields: cleanFields(form.fields),
+    children: childTypes.value.length ? form.children : [],
   }
   saving.value = true
   try {
@@ -253,7 +222,7 @@ async function submit() {
       const { type: _type, ...update } = payload
       emit('submit', isCard.value ? update : { ...update, card_type: undefined })
     } else {
-      emit('submit', payload)
+      emit('submit', duplicating.value ? { ...payload, source_template_id: props.duplicateFrom!.id } : payload)
     }
   } finally {
     saving.value = false
@@ -263,7 +232,9 @@ async function submit() {
 const title = computed(() =>
   editing.value
     ? t('tplEditor.editTitle', { name: props.template?.name })
-    : t('tplEditor.newTitle', { type: TYPE_LABELS[form.type] }),
+    : duplicating.value
+      ? t('tplEditor.duplicateTitle', { name: props.duplicateFrom?.name })
+      : t('tplEditor.newTitle', { type: TYPE_LABELS[form.type] }),
 )
 </script>
 
@@ -271,12 +242,15 @@ const title = computed(() =>
   <v-dialog v-model="open" max-width="980" scrollable>
     <v-card rounded="lg">
       <v-card-title class="d-flex align-center gap-2 pa-4">
-        <v-icon icon="mdi-shape-square-plus" color="primary" />
+        <v-icon :icon="duplicating ? 'mdi-content-copy' : 'mdi-shape-square-plus'" color="primary" />
         <span class="text-h6">{{ title }}</span>
       </v-card-title>
       <v-divider />
 
       <v-card-text class="pa-4" style="max-height: 74vh">
+        <v-alert v-if="duplicating" type="info" variant="tonal" density="compact" class="mb-3">
+          {{ $t('tplEditor.duplicateHint') }}
+        </v-alert>
         <v-form ref="formRef" @submit.prevent="submit">
           <!-- identity -->
           <v-row dense>
@@ -285,7 +259,7 @@ const title = computed(() =>
                 v-model="form.type"
                 :label="$t('fields.type')"
                 :items="ITEM_TYPES.map((ty) => ({ title: TYPE_LABELS[ty], value: ty }))"
-                :disabled="editing"
+                :disabled="editing || duplicating"
                 @update:model-value="(v: ItemType) => (form.card_type = v === 'card' ? 'house' : null)"
               />
             </v-col>
@@ -298,6 +272,8 @@ const title = computed(() =>
                 :label="$t('tplEditor.prefix')"
                 :rules="prefixRules"
                 maxlength="3"
+                dir="ltr"
+                :placeholder="$t('tplEditor.prefixPlaceholder')"
                 :hint="$t('tplEditor.prefixHint', { example: `${form.type === 'card' ? 'C' : form.type === 'assembly' ? 'A' : 'S'}-${(form.serial_prefix || 'XXX').toUpperCase()}-001` })"
                 persistent-hint
                 @update:model-value="(v: string) => (form.serial_prefix = (v || '').toUpperCase())"
@@ -315,7 +291,7 @@ const title = computed(() =>
             </v-col>
             <v-col v-if="childTypes.length" cols="12">
               <v-autocomplete
-                v-model="form.child_template_ids"
+                v-model="childIds"
                 :label="form.type === 'setup' ? $t('tplEditor.childrenSetup') : $t('tplEditor.childrenAssembly')"
                 :items="childChoices"
                 item-title="title"
@@ -331,176 +307,56 @@ const title = computed(() =>
                 </template>
               </v-autocomplete>
             </v-col>
+            <v-col v-if="childTypes.length && form.children.length" cols="12">
+              <div class="text-overline text-medium-emphasis">{{ $t('tplEditor.limitsTitle') }}</div>
+              <div class="text-caption text-medium-emphasis mb-2">{{ $t('tplEditor.limitsHint') }}</div>
+              <div v-for="c in form.children" :key="c.template_id" class="limit-row d-flex align-center flex-wrap gap-3 mb-2">
+                <v-icon icon="mdi-puzzle-outline" size="18" class="text-medium-emphasis" />
+                <bdi class="font-weight-medium limit-name">{{ templateName(c.template_id) }}</bdi>
+                <v-text-field
+                  :model-value="c.min_count"
+                  :label="$t('tplEditor.minCount')"
+                  type="number"
+                  min="0"
+                  density="compact"
+                  hide-details
+                  class="limit-input"
+                  @update:model-value="(v: string) => setMin(c, v)"
+                />
+                <v-text-field
+                  :model-value="c.max_count ?? ''"
+                  :label="$t('tplEditor.maxCount')"
+                  :placeholder="$t('tplEditor.noLimit')"
+                  persistent-placeholder
+                  type="number"
+                  min="1"
+                  density="compact"
+                  :error-messages="limitError(c)"
+                  hide-details="auto"
+                  class="limit-input"
+                  @update:model-value="(v: string) => setMax(c, v)"
+                />
+              </div>
+            </v-col>
           </v-row>
 
-          <!-- legend -->
-          <div class="legend d-flex flex-wrap align-center gap-4 mt-4 mb-2 text-caption">
-            <span class="d-flex align-center gap-1"><span class="chip-white" /> {{ $t('tplEditor.legendWhite') }}</span>
-            <span class="d-flex align-center gap-1"><span class="chip-white"><v-icon icon="mdi-menu-down" size="14" /></span> {{ $t('tplEditor.legendList') }}</span>
-            <span class="d-flex align-center gap-1"><span class="chip-grey" /> {{ $t('tplEditor.legendGrey') }}</span>
-            <span class="d-flex align-center gap-1"><strong class="text-error">*</strong> {{ $t('tplEditor.legendRequired') }}</span>
-          </div>
-
-          <!-- fields -->
-          <div class="d-flex align-center mb-2">
-            <div class="text-overline text-medium-emphasis">
-              {{ $t('tplEditor.fields', { n: form.fields.length }) }}
-            </div>
-            <v-spacer />
-            <v-menu location="bottom end" max-height="420">
-              <template #activator="{ props: menu }">
-                <v-btn v-bind="menu" size="small" color="primary" variant="tonal" prepend-icon="mdi-plus">
-                  {{ $t('tplEditor.addField') }}
-                </v-btn>
-              </template>
-              <v-list density="compact" nav>
-                <template v-for="g in FIELD_TYPE_GROUPS" :key="g.group">
-                  <v-list-subheader>{{ $t('tplEditor.groups.' + g.group) }}</v-list-subheader>
-                  <v-list-item
-                    v-for="ft in g.types"
-                    :key="ft"
-                    :prepend-icon="FIELD_TYPE_ICONS[ft]"
-                    :title="FIELD_TYPE_LABELS[ft]"
-                    :disabled="!typeAllowed(ft)"
-                    @click="addField(ft)"
-                  />
-                </template>
-              </v-list>
-            </v-menu>
-          </div>
-
-          <v-alert
-            v-if="!form.fields.length"
-            type="info"
-            variant="tonal"
-            density="compact"
-            icon="mdi-information-outline"
-          >
-            {{ $t('tplEditor.noFields') }}
-          </v-alert>
-
-          <div
-            v-for="(row, i) in form.fields"
-            :key="row.uid"
-            class="field-row mb-2"
-            :class="row.mode === 'item' ? 'is-grey' : 'is-white'"
-          >
-            <div class="d-flex align-center gap-2 flex-wrap">
-              <v-icon :icon="FIELD_TYPE_ICONS[row.field_type]" size="20" class="text-medium-emphasis" />
-              <v-text-field
-                v-model="row.label"
-                :label="$t('tplEditor.fieldName')"
-                density="compact"
-                hide-details
-                class="field-name"
-              />
-              <v-chip size="small" variant="tonal">{{ FIELD_TYPE_LABELS[row.field_type] }}</v-chip>
-              <v-btn-toggle
-                :model-value="row.mode"
-                density="compact"
-                variant="outlined"
-                divided
-                mandatory
-                rounded="lg"
-                @update:model-value="(m: FieldMode) => setMode(row, m)"
+          <FieldListEditor v-model="form.fields" :item-type="form.type" :card-type="form.card_type">
+            <template #actions>
+              <v-btn size="small" variant="text" prepend-icon="mdi-playlist-plus" @click="pickerOpen = true">
+                {{ $t('fieldGroups.load') }}
+              </v-btn>
+              <v-btn
+                v-if="direct"
+                size="small"
+                variant="text"
+                prepend-icon="mdi-content-save-outline"
+                :disabled="!form.fields.length"
+                @click="openSaveGroup"
               >
-                <v-btn
-                  v-for="m in modesFor(row.field_type)"
-                  :key="m"
-                  :value="m"
-                  size="small"
-                  :prepend-icon="MODE_ICONS[m]"
-                >
-                  {{ FIELD_MODE_LABELS[m] }}
-                </v-btn>
-              </v-btn-toggle>
-              <v-checkbox
-                v-model="row.required"
-                :label="$t('tplEditor.required')"
-                density="compact"
-                hide-details
-                color="error"
-              />
-              <v-spacer />
-              <v-btn icon="mdi-arrow-up" size="x-small" variant="text" :disabled="i === 0" @click="moveField(i, -1)" />
-              <v-btn
-                icon="mdi-arrow-down"
-                size="x-small"
-                variant="text"
-                :disabled="i === form.fields.length - 1"
-                @click="moveField(i, 1)"
-              />
-              <v-btn
-                :icon="row.expanded ? 'mdi-chevron-up' : 'mdi-cog-outline'"
-                size="x-small"
-                variant="text"
-                @click="row.expanded = !row.expanded"
-              />
-              <v-btn icon="mdi-delete-outline" size="x-small" variant="text" color="error" @click="removeField(i)" />
-            </div>
-
-            <v-expand-transition>
-              <div v-if="row.expanded" class="mt-3">
-                <v-row dense>
-                  <!-- the enum's own values -->
-                  <v-col v-if="row.field_type === 'enum'" cols="12">
-                    <v-combobox
-                      v-model="enumOptions(row).value"
-                      :label="$t('tplEditor.enumValues')"
-                      multiple
-                      chips
-                      closable-chips
-                      :hint="$t('tplEditor.enumHint')"
-                      persistent-hint
-                    />
-                  </v-col>
-                  <!-- a list field's allowed values -->
-                  <v-col v-else-if="row.mode === 'choice'" cols="12">
-                    <FieldInput
-                      v-model="optionsModel(row).value"
-                      :field="{ ...row, label: $t('tplEditor.listValues') }"
-                      mode="options"
-                    />
-                    <div class="text-caption text-medium-emphasis mt-n2 mb-2">
-                      {{ $t('tplEditor.listHint') }}
-                    </div>
-                  </v-col>
-                  <!-- formats -->
-                  <v-col v-if="row.field_type === 'string' || row.field_type === 'serial_string'" cols="12" sm="6">
-                    <v-text-field
-                      :model-value="row.config.pattern ?? ''"
-                      :label="$t('tplEditor.pattern')"
-                      placeholder="XX-#####"
-                      :hint="$t('tplEditor.patternHint')"
-                      persistent-hint
-                      @update:model-value="(v: string) => (row.config = { ...row.config, pattern: v || undefined })"
-                    />
-                  </v-col>
-                  <v-col v-if="row.field_type === 'description'" cols="12" sm="6">
-                    <v-text-field
-                      :model-value="row.config.min_length ?? 8"
-                      :label="$t('tplEditor.minLength')"
-                      type="number"
-                      min="1"
-                      @update:model-value="(v: string) => (row.config = { ...row.config, min_length: Number(v) || 8 })"
-                    />
-                  </v-col>
-                  <!-- the template's value (white fields) -->
-                  <v-col v-if="row.mode === 'fixed' && row.field_type !== 'files'" cols="12">
-                    <FieldInput
-                      v-model="row.fixed_value"
-                      :field="{ ...row, label: $t('tplEditor.templateValue', { name: row.label }) }"
-                    />
-                  </v-col>
-                  <v-col v-if="row.mode === 'fixed' && row.field_type === 'files'" cols="12">
-                    <v-alert type="info" variant="tonal" density="compact">
-                      {{ $t('tplEditor.templateFilesHint') }}
-                    </v-alert>
-                  </v-col>
-                </v-row>
-              </div>
-            </v-expand-transition>
-          </div>
+                {{ $t('fieldGroups.saveAs') }}
+              </v-btn>
+            </template>
+          </FieldListEditor>
         </v-form>
       </v-card-text>
 
@@ -522,39 +378,41 @@ const title = computed(() =>
         </v-btn>
       </v-card-actions>
     </v-card>
+
+    <FieldGroupPicker v-model="pickerOpen" @load="loadGroups" />
+
+    <v-dialog v-model="saveGroupOpen" max-width="460">
+      <v-card rounded="lg">
+        <v-card-title class="pa-4">{{ $t('fieldGroups.saveAs') }}</v-card-title>
+        <v-card-text>
+          <div class="text-caption text-medium-emphasis mb-3">
+            {{ $t('fieldGroups.saveHint', { n: form.fields.length }) }}
+          </div>
+          <v-text-field v-model="groupForm.name" :label="$t('fieldGroups.name')" autofocus />
+          <v-text-field v-model="groupForm.description" :label="$t('fields.description')" />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="saveGroupOpen = false">{{ $t('common.cancel') }}</v-btn>
+          <v-btn color="primary" variant="flat" :loading="savingGroup" :disabled="!groupForm.name.trim()" @click="saveGroup">
+            {{ $t('common.save') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-dialog>
 </template>
 
 <style scoped>
-.field-row {
+.limit-row {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
-.field-row.is-white {
-  background: rgb(var(--v-theme-surface));
-}
-.field-row.is-grey {
-  background: rgba(var(--v-theme-on-surface), 0.06);
-}
-.field-name {
-  max-width: 260px;
+.limit-name {
   min-width: 180px;
 }
-.chip-white,
-.chip-grey {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 16px;
-  border-radius: 4px;
-  border: 1px solid rgba(var(--v-border-color), 0.4);
-}
-.chip-white {
-  background: rgb(var(--v-theme-surface));
-}
-.chip-grey {
-  background: rgba(var(--v-theme-on-surface), 0.12);
+.limit-input {
+  max-width: 140px;
 }
 </style>

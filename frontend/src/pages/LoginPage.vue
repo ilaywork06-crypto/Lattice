@@ -142,7 +142,7 @@ onMounted(loadHints)
                     @click="fill(hint)"
                   >
                     <v-icon start :icon="hint.password ? 'mdi-account-key' : 'mdi-account'" size="14" />
-                    {{ hint.full_name }} · {{ ROLE_LABELS[hint.role] }}
+                    <bdi>{{ hint.full_name }}</bdi> · {{ ROLE_LABELS[hint.role] }}
                   </v-chip>
                 </div>
                 <p class="text-center text-caption text-medium-emphasis mt-3">

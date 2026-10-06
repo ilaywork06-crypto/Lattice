@@ -21,8 +21,8 @@ Design notes
 * Setups, assemblies and cards share one ``items`` table with a self-referential
   ``parent_id``; which templates may sit inside which is ``template_children``.
 * "Desiccator" is a property of a *location* (``Location.is_desiccator``), not a
-  status typed onto a card: a card is in the desiccator when it is loose (no
-  parent) and sits at a desiccator location. Nothing derived is stored twice.
+  status typed onto a card: a card is in the desiccator when it sits at a
+  desiccator location — loose or assembled. Nothing derived is stored twice.
 """
 
 from __future__ import annotations
@@ -137,9 +137,9 @@ AVAILABLE_STATES: tuple[ItemState, ...] = (ItemState.built, ItemState.ok)
 class StorageStatus(str, enum.Enum):
     """Where a card physically is — *derived*, never stored (see module doc)."""
 
-    assembled = "assembled"    # inside another item
+    desiccator = "desiccator"  # at a desiccator location (loose or assembled)
+    assembled = "assembled"    # inside another item, outside the desiccator
     in_use = "in_use"          # loose, outside the desiccator
-    desiccator = "desiccator"  # loose, at a desiccator location
 
 
 class UserRole(str, enum.Enum):
@@ -262,7 +262,17 @@ template_children = Table(
         primary_key=True,
         index=True,
     ),
+    # How many units of the child template one parent item may hold: at least
+    # ``min_count`` for the parent to be complete, never more than ``max_count``
+    # (NULL = no upper limit).
+    Column("min_count", Integer, nullable=False, server_default="0"),
+    Column("max_count", Integer, nullable=True),
     CheckConstraint("parent_template_id <> child_template_id", name="not_self"),
+    CheckConstraint("min_count >= 0", name="min_count_non_negative"),
+    CheckConstraint(
+        "max_count IS NULL OR (max_count >= 1 AND max_count >= min_count)",
+        name="max_count_valid",
+    ),
 )
 
 
@@ -429,17 +439,24 @@ class ItemTemplate(Base):
         cascade="all, delete-orphan",
         order_by="TemplateField.position",
     )
+    # The editable side: one row per allowed child template, with its limits.
+    child_links: Mapped[list[TemplateChild]] = relationship(
+        foreign_keys=lambda: [TemplateChild.parent_template_id],
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+    # Read-only conveniences over the same rows.
     child_templates: Mapped[list[ItemTemplate]] = relationship(
         secondary=template_children,
         primaryjoin=lambda: ItemTemplate.id == template_children.c.parent_template_id,
         secondaryjoin=lambda: ItemTemplate.id == template_children.c.child_template_id,
-        back_populates="parent_templates",
+        viewonly=True,
     )
     parent_templates: Mapped[list[ItemTemplate]] = relationship(
         secondary=template_children,
         primaryjoin=lambda: ItemTemplate.id == template_children.c.child_template_id,
         secondaryjoin=lambda: ItemTemplate.id == template_children.c.parent_template_id,
-        back_populates="child_templates",
+        viewonly=True,
     )
     items: Mapped[list[Item]] = relationship(back_populates="template")
 
@@ -474,6 +491,73 @@ class TemplateField(Base):
     fixed_value: Mapped[object | None] = mapped_column(JSON, nullable=True)
 
     template: Mapped[ItemTemplate] = relationship(back_populates="fields")
+
+
+class TemplateChild(Base):
+    """One entry of a template's contents: which template may sit inside it and
+    how many units of it one item holds (``min_count`` .. ``max_count``)."""
+
+    __table__ = template_children
+
+    parent: Mapped[ItemTemplate] = relationship(
+        foreign_keys=[template_children.c.parent_template_id],
+        back_populates="child_links",
+    )
+    child: Mapped[ItemTemplate] = relationship(
+        foreign_keys=[template_children.c.child_template_id],
+    )
+
+
+class FieldGroup(Base):
+    """A named, reusable set of field definitions kept in the catalog.
+
+    Loading a group into the template editor copies its fields into the new
+    template; the template does not stay linked to the group, so editing a group
+    later never changes existing templates (or their items) behind anyone's back.
+    """
+
+    __tablename__ = "field_groups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    fields: Mapped[list[FieldGroupField]] = relationship(
+        back_populates="group",
+        cascade="all, delete-orphan",
+        order_by="FieldGroupField.position",
+    )
+
+
+class FieldGroupField(Base):
+    """One field definition of a field group (the same shape as a TemplateField)."""
+
+    __tablename__ = "field_group_fields"
+    __table_args__ = (
+        UniqueConstraint("group_id", "key", name="uq_field_group_fields_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("field_groups.id", ondelete="CASCADE"), index=True
+    )
+    key: Mapped[str] = mapped_column(String(64))
+    label: Mapped[str] = mapped_column(String(255))
+    field_type: Mapped[FieldType] = mapped_column(_enum(FieldType, "field_type"))
+    mode: Mapped[FieldMode] = mapped_column(_enum(FieldMode, "field_mode"))
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    fixed_value: Mapped[object | None] = mapped_column(JSON, nullable=True)
+
+    group: Mapped[FieldGroup] = relationship(back_populates="fields")
 
 
 # ─────────────────────────── Items ───────────────────────────
@@ -577,10 +661,12 @@ class Item(Base):
         """Where a card is, derived from its parent and its location."""
         if self.type != ItemType.card:
             return None
-        if self.parent_id is not None:
-            return StorageStatus.assembled
+        # The desiccator is a place: a card at a desiccator location is in it,
+        # whether loose or assembled into something that sits there.
         if self.location is not None and self.location.is_desiccator:
             return StorageStatus.desiccator
+        if self.parent_id is not None:
+            return StorageStatus.assembled
         return StorageStatus.in_use
 
 

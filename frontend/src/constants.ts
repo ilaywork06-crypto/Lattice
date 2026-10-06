@@ -32,6 +32,12 @@ export const STATE_COLORS: Record<ItemState, string> = {
 
 export const STATE_LABELS = labelMap<ItemState>('state')
 
+/** An audit action code ("template.update") in the UI language. */
+export function auditActionLabel(action: string): string {
+  const key = `enums.auditAction.${action.replace(/\./g, '_')}`
+  return i18n.global.te(key) ? i18n.global.t(key) : action
+}
+
 export const ITEM_STATES: ItemState[] = ['built', 'ok', 'faulty', 'destroyed']
 /** The states counted on list pages (destroyed units are history). */
 export const ACTIVE_STATES: ItemState[] = ['built', 'ok', 'faulty']
@@ -216,9 +222,21 @@ export function formatBytes(bytes?: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+/** A "YYYY-MM-DD" date is a calendar day, not UTC midnight — read it as local. */
+export function parseDay(value: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null
+}
+
+/** A local Date as "YYYY-MM-DD" (what date fields store). */
+export function toDay(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 export function formatDate(value?: string | null): string {
   if (!value) return '—'
-  const d = new Date(value)
+  const d = parseDay(value) ?? new Date(value)
   if (Number.isNaN(d.getTime())) return value
   return d.toLocaleDateString(intlLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
 }

@@ -22,7 +22,7 @@ const icons: Record<string, string> = {
   >
     <div class="d-flex align-center gap-2">
       <v-icon :icon="icons[ui.snack.color]" />
-      <span class="text-body-2">{{ ui.snack.message }}</span>
+      <span class="text-body-2"><bdi>{{ ui.snack.message }}</bdi></span>
     </div>
     <template #actions>
       <v-btn icon="mdi-close" size="small" variant="text" @click="ui.snack.show = false" />

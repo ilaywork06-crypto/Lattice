@@ -119,18 +119,19 @@ def list_items(
     if unassigned:
         q = q.filter(Item.parent_id.is_(None))
     if storage_status:
-        q = q.filter(Item.type == ItemType.card)
-        if storage_status == StorageStatus.assembled:
-            q = q.filter(Item.parent_id.is_not(None))
+        # Mirrors Item.storage_status: the desiccator is a place, so it wins over
+        # being assembled.
+        q = q.filter(Item.type == ItemType.card).outerjoin(
+            Location, Item.location_id == Location.id
+        )
+        in_desiccator = Location.is_desiccator.is_(True)
+        outside = or_(Location.id.is_(None), Location.is_desiccator.is_(False))
+        if storage_status == StorageStatus.desiccator:
+            q = q.filter(in_desiccator)
+        elif storage_status == StorageStatus.assembled:
+            q = q.filter(Item.parent_id.is_not(None), outside)
         else:
-            q = q.outerjoin(Location, Item.location_id == Location.id).filter(
-                Item.parent_id.is_(None)
-            )
-            q = q.filter(
-                Location.is_desiccator.is_(True)
-                if storage_status == StorageStatus.desiccator
-                else or_(Location.id.is_(None), Location.is_desiccator.is_(False))
-            )
+            q = q.filter(Item.parent_id.is_(None), outside)
     if child_of_template:
         q = q.join(
             template_children,

@@ -35,6 +35,8 @@ import type {
   NotificationItem,
   NotificationStatus,
   SearchResults,
+  FieldGroupIn,
+  FieldGroupOut,
   TemplateCreate,
   TemplateOut,
   TemplateSummary,
@@ -152,6 +154,26 @@ export const itemsApi = {
 // ---------------------------------------------------------------------------
 // Templates
 // ---------------------------------------------------------------------------
+export const fieldGroupsApi = {
+  async list(search?: string): Promise<FieldGroupOut[]> {
+    const { data } = await coreApi.get<FieldGroupOut[]>('/field-groups', {
+      params: search ? { search } : {},
+    })
+    return data
+  },
+  async create(body: FieldGroupIn): Promise<FieldGroupOut> {
+    const { data } = await coreApi.post<FieldGroupOut>('/field-groups', body)
+    return data
+  },
+  async update(id: number, body: Partial<FieldGroupIn>): Promise<FieldGroupOut> {
+    const { data } = await coreApi.patch<FieldGroupOut>(`/field-groups/${id}`, body)
+    return data
+  },
+  async remove(id: number): Promise<void> {
+    await coreApi.delete(`/field-groups/${id}`)
+  },
+}
+
 export const templatesApi = {
   async list(params: { type?: ItemType; search?: string } = {}): Promise<TemplateSummary[]> {
     const { data } = await coreApi.get<TemplateSummary[]>('/templates', { params })

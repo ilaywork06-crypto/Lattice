@@ -247,7 +247,7 @@ onMounted(loadTemplates)
         {{ $t('impexp.failedTitle') }}
         <v-chip color="error" variant="tonal" size="small">{{ $t('impexp.errors', { n: failure.errors.length || 1 }) }}</v-chip>
       </v-card-title>
-      <v-card-subtitle class="pb-2">{{ failure.message }}</v-card-subtitle>
+      <v-card-subtitle class="pb-2"><bdi>{{ failure.message }}</bdi></v-card-subtitle>
       <v-divider />
       <v-data-table
         v-if="failure.errors.length"

@@ -3,13 +3,15 @@
 Definitions (all quantities are **sums of ``Item.quantity``**, so a commercial
 card holding 25 units counts 25 and a serialised card counts 1):
 
-* **desiccator** — a loose card (no parent) at a location in the desiccator
-  group (``Location.is_desiccator``).
-* **available** — desiccator stock in state *built* or *ok*: what can be built
-  with right now. Cards outside the desiccator are presumably in use and cards
-  that are faulty or destroyed can't be built with, so neither counts. This is
-  what stock thresholds watch.
-* **in use** — loose, outside the desiccator; **assembled** — inside an item.
+* **desiccator** — a card at a location in the desiccator group
+  (``Location.is_desiccator``). The desiccator is a *place*: a card assembled
+  into an assembly that sits in the desiccator is in the desiccator too.
+* **available** — desiccator stock in state *built* or *ok*. Cards outside the
+  desiccator are presumably in use and cards that are faulty or destroyed can't
+  be built with, so neither counts. This is what stock thresholds watch.
+* **in use** — loose, outside the desiccator; **assembled** — inside an item
+  outside the desiccator. ``assembled_in_desiccator`` breaks out the part of
+  the desiccator count that sits inside assemblies.
 * Destroyed cards are history, not inventory: they count nowhere.
 """
 
@@ -53,7 +55,6 @@ def available_quantity(db: Session, template_id: int) -> int:
         .join(Location, Item.location_id == Location.id)
         .filter(
             Item.template_id == template_id,
-            Item.parent_id.is_(None),
             Location.is_desiccator.is_(True),
             Item.state.in_(AVAILABLE_STATES),
         )
@@ -73,7 +74,7 @@ def card_groups(db: Session, card_type: CardType | None = None) -> list[Inventor
 
     agg: dict[int, dict] = defaultdict(lambda: {
         "total": 0, "available": 0, "desiccator": 0, "in_use": 0, "assembled": 0,
-        "faulty": 0, "records": 0, "serials": [],
+        "assembled_in_desiccator": 0, "faulty": 0, "records": 0, "serials": [],
     })
     q = _live_cards(db)
     if card_type is not None:
@@ -88,6 +89,8 @@ def card_groups(db: Session, card_type: CardType | None = None) -> list[Inventor
             g["assembled"] += units
         elif status == StorageStatus.desiccator:
             g["desiccator"] += units
+            if c.parent_id is not None:
+                g["assembled_in_desiccator"] += units
             if c.state in AVAILABLE_STATES:
                 g["available"] += units
                 g["serials"].append(c.serial)
@@ -111,6 +114,7 @@ def card_groups(db: Session, card_type: CardType | None = None) -> list[Inventor
             desiccator=g["desiccator"],
             in_use=g["in_use"],
             assembled=g["assembled"],
+            assembled_in_desiccator=g["assembled_in_desiccator"],
             faulty=g["faulty"],
             records=g["records"],
             available_serials=sorted(g["serials"]),

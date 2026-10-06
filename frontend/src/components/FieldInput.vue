@@ -17,6 +17,9 @@ import {
   STATE_LABELS,
   applyPattern,
   formatBytes,
+  formatDate,
+  parseDay,
+  toDay,
 } from '@/constants'
 import type {
   DocumentOut,
@@ -75,6 +78,13 @@ const value = computed<any>({
   get: () => props.modelValue,
   set: (v) => emit('update:modelValue', v),
 })
+
+// ── date (stored as "YYYY-MM-DD") ──
+const dateMenu = ref(false)
+function pickDate(d: unknown) {
+  if (d instanceof Date) value.value = toDay(d)
+  dateMenu.value = false
+}
 
 // ── reference lists ──
 const parentItems = ref<ItemListOut[]>([])
@@ -277,7 +287,7 @@ function removeFile(id: number) {
           :closable="!disabled"
           @click:close="removeFile(d.id)"
         >
-          {{ d.name }}
+          <bdi>{{ d.name }}</bdi>
           <span v-if="d.size_bytes" class="text-medium-emphasis ms-1">{{ formatBytes(d.size_bytes) }}</span>
         </v-chip>
       </div>
@@ -361,16 +371,37 @@ function removeFile(id: number) {
       :error-messages="errorMessages"
     />
 
-    <v-text-field
+    <!-- Not <input type="date">: its placeholder and format follow the
+         browser's language, not the app's. -->
+    <v-menu
       v-else-if="ft === 'date'"
-      v-model="value"
-      :label="label"
-      type="date"
-      :prepend-inner-icon="icon"
-      :rules="rules"
+      v-model="dateMenu"
+      :close-on-content-click="false"
       :disabled="disabled"
-      :error-messages="errorMessages"
-    />
+      location="bottom start"
+    >
+      <template #activator="{ props: menu }">
+        <v-text-field
+          v-bind="menu"
+          :model-value="value ? formatDate(String(value)) : ''"
+          :label="label"
+          :placeholder="$t('fieldInput.datePlaceholder')"
+          :prepend-inner-icon="icon"
+          append-inner-icon="mdi-calendar"
+          readonly
+          :clearable="!disabled"
+          :rules="rules"
+          :disabled="disabled"
+          :error-messages="errorMessages"
+          @click:clear="value = null"
+        />
+      </template>
+      <v-date-picker
+        :model-value="value ? parseDay(String(value)) : null"
+        show-adjacent-months
+        @update:model-value="(d: unknown) => pickDate(d)"
+      />
+    </v-menu>
 
     <v-text-field
       v-else

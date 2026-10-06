@@ -10,6 +10,7 @@ import { useUiStore } from '@/stores/ui'
 import { useCatalogStore } from '@/stores/catalog'
 import { useRefsStore } from '@/stores/refs'
 import PageHeader from '@/components/PageHeader.vue'
+import FieldGroupsPanel from '@/components/FieldGroupsPanel.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ConfirmDialog from '@/components/dialogs/ConfirmDialog.vue'
 import type { CatalogCategory, CatalogOption, LocationOut } from '@/api/types'
@@ -21,7 +22,7 @@ const router = useRouter()
 const catalog = useCatalogStore()
 const refs = useRefsStore()
 
-type Tab = CatalogCategory | 'desiccator'
+type Tab = CatalogCategory | 'desiccator' | 'field_groups'
 const CATEGORIES: CatalogCategory[] = ['project', 'industry', 'team']
 const tab = ref<Tab>((route.query.tab as Tab) || 'project')
 const all = ref<CatalogOption[]>([])
@@ -32,9 +33,10 @@ const tabs = computed(() => [
   { value: 'industry' as const, label: t('catalog.industries'), icon: 'mdi-factory' },
   { value: 'team' as const, label: t('catalog.teams'), icon: 'mdi-account-group-outline' },
   { value: 'desiccator' as const, label: t('catalog.desiccator'), icon: 'mdi-water-off' },
+  { value: 'field_groups' as const, label: t('fieldGroups.tab'), icon: 'mdi-form-select' },
 ])
 
-const isCategory = computed(() => tab.value !== 'desiccator')
+const isCategory = computed(() => CATEGORIES.includes(tab.value as CatalogCategory))
 const category = computed(() => (isCategory.value ? (tab.value as CatalogCategory) : 'project'))
 const options = computed(() => all.value.filter((o) => o.category === category.value))
 const otherCategories = computed(() => CATEGORIES.filter((c) => c !== category.value))
@@ -247,7 +249,7 @@ onMounted(async () => {
           {{ $t(ADD_LABEL[category]) }}
         </v-btn>
         <v-btn
-          v-else
+          v-else-if="tab === 'desiccator'"
           color="primary"
           prepend-icon="mdi-content-save"
           :disabled="!desiccatorDirty"
@@ -262,7 +264,7 @@ onMounted(async () => {
     <v-card variant="flat" border>
       <v-tabs v-model="tab" color="primary" show-arrows>
         <v-tab v-for="tb in tabs" :key="tb.value" :value="tb.value" :prepend-icon="tb.icon">
-          {{ tb.label }}
+          <bdi>{{ tb.label }}</bdi>
         </v-tab>
       </v-tabs>
       <v-divider />
@@ -280,7 +282,7 @@ onMounted(async () => {
           :items-per-page="25"
         >
           <template #item.value="{ item }">
-            <span class="font-weight-medium">{{ item.value }}</span>
+            <span class="font-weight-medium"><bdi>{{ item.value }}</bdi></span>
           </template>
           <template #item.description="{ item }">
             <span :class="{ 'text-medium-emphasis': !item.description }">{{ item.description || '—' }}</span>
@@ -290,7 +292,7 @@ onMounted(async () => {
               <div v-for="c in otherCategories" :key="c" class="d-flex flex-wrap align-center gap-1">
                 <span class="text-caption text-medium-emphasis me-1">{{ $t(CAT_LABEL[c]) }}:</span>
                 <v-chip v-for="o in linkedOf(item, c)" :key="o.id" size="x-small" variant="tonal" color="primary">
-                  {{ o.value }}
+                  <bdi>{{ o.value }}</bdi>
                 </v-chip>
                 <span v-if="!linkedOf(item, c).length" class="text-caption text-medium-emphasis">—</span>
               </div>
@@ -329,6 +331,9 @@ onMounted(async () => {
         </v-data-table>
       </template>
 
+      <!-- field groups: reusable sets of template fields -->
+      <FieldGroupsPanel v-else-if="tab === 'field_groups'" />
+
       <!-- desiccator: which locations count as stock -->
       <template v-else>
         <v-alert type="info" variant="tonal" density="compact" class="ma-4" icon="mdi-water-off">
@@ -361,7 +366,7 @@ onMounted(async () => {
           :items-per-page="25"
         >
           <template #item.name="{ item }">
-            <span class="font-weight-medium">{{ item.name }}</span>
+            <span class="font-weight-medium"><bdi>{{ item.name }}</bdi></span>
           </template>
           <template #item.building="{ item }">{{ item.building || '—' }}</template>
           <template #item.room="{ item }">{{ item.room || '—' }}</template>

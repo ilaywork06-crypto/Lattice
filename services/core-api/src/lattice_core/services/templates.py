@@ -24,9 +24,11 @@ from lattice_core.models import (
     FieldType,
     Item,
     ItemFieldValue,
+    ItemState,
     ItemTemplate,
     ItemType,
     StockThreshold,
+    TemplateChild,
     TemplateField,
     User,
     card_tracking,
@@ -104,13 +106,62 @@ def _check_card_type(item_type: ItemType, card_type) -> CardType | None:
     return None
 
 
-def _resolve_children(db: Session, tpl_type: ItemType, ids: list[int], self_id: int | None):
-    wanted = list(dict.fromkeys(ids))
-    children = db.query(ItemTemplate).filter(ItemTemplate.id.in_(wanted)).all() if wanted else []
-    if len(children) != len(wanted):
-        raise DomainError("One or more of the chosen templates no longer exist")
+def _as_count(value, what: str, name: str) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise DomainError(f"'{name}': the {what} must be a whole number") from None
+    if n < 0:
+        raise DomainError(f"'{name}': the {what} cannot be negative")
+    return n
+
+
+def child_entries(data: dict, tpl: ItemTemplate | None = None) -> list[dict] | None:
+    """The requested contents as ``[{template_id, min_count, max_count}]``.
+
+    ``children`` carries the limits; the older ``child_template_ids`` is still
+    accepted and keeps the limits a template already had for the ids it lists.
+    ``None`` means "not part of this request".
+    """
+    if data.get("children") is not None:
+        return [
+            {
+                "template_id": c.get("template_id"),
+                "min_count": c.get("min_count"),
+                "max_count": c.get("max_count"),
+            }
+            for c in data["children"]
+        ]
+    if data.get("child_template_ids") is not None:
+        have = {link.child_template_id: link for link in tpl.child_links} if tpl else {}
+        return [
+            {
+                "template_id": tid,
+                "min_count": have[tid].min_count if tid in have else 0,
+                "max_count": have[tid].max_count if tid in have else None,
+            }
+            for tid in data["child_template_ids"]
+        ]
+    return None
+
+
+def _resolve_children(
+    db: Session, tpl_type: ItemType, entries: list[dict], self_id: int | None
+) -> list[tuple[ItemTemplate, int, int | None]]:
+    """Validate the contents list; returns ``(template, min, max)`` in order."""
+    seen: set[int] = set()
+    out: list[tuple[ItemTemplate, int, int | None]] = []
     allowed = ALLOWED_CHILD_TYPES[tpl_type]
-    for c in children:
+    for entry in entries:
+        tid = entry.get("template_id")
+        if tid in seen:
+            continue
+        seen.add(tid)
+        c = db.get(ItemTemplate, tid) if tid is not None else None
+        if c is None:
+            raise DomainError("One or more of the chosen templates no longer exist")
         if c.id == self_id:
             raise DomainError("A template cannot contain itself")
         if c.type not in allowed:
@@ -118,8 +169,45 @@ def _resolve_children(db: Session, tpl_type: ItemType, ids: list[int], self_id: 
                 f"A {tpl_type.value} template cannot contain {c.type.value} templates "
                 f"('{c.name}')"
             )
-    order = {tid: i for i, tid in enumerate(wanted)}
-    return sorted(children, key=lambda c: order[c.id])
+        minimum = _as_count(entry.get("min_count"), "minimum", c.name) or 0
+        maximum = _as_count(entry.get("max_count"), "maximum", c.name)
+        if maximum is not None and maximum < 1:
+            raise DomainError(f"'{c.name}': the maximum must be at least 1 (leave it "
+                              "empty for no limit)")
+        if maximum is not None and maximum < minimum:
+            raise DomainError(
+                f"'{c.name}': the maximum ({maximum}) is below the minimum ({minimum})"
+            )
+        out.append((c, minimum, maximum))
+    return out
+
+
+def _refresh_children(db: Session, tpl: ItemTemplate, others: list[ItemTemplate]) -> None:
+    """The read-only child/parent lists are views of child_links — reload them."""
+    db.flush()
+    db.expire(tpl, ["child_templates", "parent_templates"])
+    for other in others:
+        db.expire(other, ["parent_templates"])
+
+
+def _copy_template_files(
+    db: Session, tpl: ItemTemplate, field: TemplateField, source_field_id, user: User
+) -> int:
+    """Duplicate a template: copy the files a fixed files field holds."""
+    if field.field_type != FieldType.files or field.mode != FieldMode.fixed:
+        return 0
+    source = db.get(TemplateField, source_field_id)
+    if source is None or source.field_type != FieldType.files:
+        raise DomainError(f"'{field.label}': the field to copy files from no longer exists")
+    docs = (
+        db.query(Document)
+        .filter(Document.field_id == source.id, Document.template_id == source.template_id)
+        .order_by(Document.created_at)
+        .all()
+    )
+    for doc in docs:
+        files_svc.copy_document(db, doc, user, template_id=tpl.id, field_id=field.id)
+    return len(docs)
 
 
 def _spec_from_field(f: TemplateField) -> dict:
@@ -165,24 +253,46 @@ def create_template(db: Session, data: dict, user: User) -> ItemTemplate:
         description=(data.get("description") or "").strip() or None,
         created_by=user.id,
     )
-    specs = fields_svc.normalize_field_specs(db, item_type, card_type, data.get("fields") or [])
+    raw_fields = data.get("fields") or []
+    specs = fields_svc.normalize_field_specs(db, item_type, card_type, raw_fields)
+    new_fields: list[TemplateField] = []
     for spec in specs:
         if spec["id"] is not None:
             raise DomainError("A new template's fields cannot refer to existing field ids")
         spec.pop("id")
-        tpl.fields.append(TemplateField(**spec))
-    tpl.child_templates = _resolve_children(
-        db, item_type, data.get("child_template_ids") or [], None
-    )
+        f = TemplateField(**spec)
+        tpl.fields.append(f)
+        new_fields.append(f)
+    children = _resolve_children(db, item_type, child_entries(data) or [], None)
+    for child, minimum, maximum in children:
+        tpl.child_links.append(
+            TemplateChild(child_template_id=child.id, min_count=minimum, max_count=maximum)
+        )
     db.add(tpl)
     db.flush()
+    # A duplicated template brings along the files its source shared with every item.
+    copied = 0
+    for raw, f in zip(raw_fields, new_fields, strict=True):
+        source_field_id = raw.get("copy_files_from") if isinstance(raw, dict) else None
+        if source_field_id:
+            copied += _copy_template_files(db, tpl, f, source_field_id, user)
+    _refresh_children(db, tpl, [c for c, _, _ in children])
     record_audit(
         db,
         template=tpl,
         action="template.create",
         summary=f"Created {item_type.value} template '{tpl.name}' ({tpl.serial_prefix})",
         user=user,
-        details={"fields": [s["label"] for s in specs]},
+        details={
+            "fields": [s["label"] for s in specs],
+            "children": [
+                {"template_id": c.id, "min_count": lo, "max_count": hi}
+                for c, lo, hi in children
+            ],
+            **({"source_template_id": data["source_template_id"]}
+               if data.get("source_template_id") else {}),
+            **({"files_copied": copied} if copied else {}),
+        },
     )
     return tpl
 
@@ -293,21 +403,9 @@ def update_template(db: Session, tpl: ItemTemplate, data: dict, user: User) -> I
 
     tpl.fields.sort(key=lambda f: f.position)
 
-    if "child_template_ids" in data and data["child_template_ids"] is not None:
-        children = _resolve_children(db, tpl.type, data["child_template_ids"], tpl.id)
-        before = {c.id for c in tpl.child_templates}
-        after = {c.id for c in children}
-        for removed_id in before - after:
-            in_use = _linked_children_count(db, tpl.id, removed_id)
-            if in_use:
-                child = db.get(ItemTemplate, removed_id)
-                raise DomainError(
-                    f"{in_use} item(s) of '{child.name}' currently sit inside items of "
-                    f"'{tpl.name}' — unlink them before removing that template from the list"
-                )
-        if before != after:
-            changes["child_templates"] = sorted(after)
-        tpl.child_templates = children
+    entries = child_entries(data, tpl)
+    if entries is not None:
+        _update_children(db, tpl, entries, changes)
 
     db.flush()
     if changes:
@@ -325,6 +423,55 @@ def update_template(db: Session, tpl: ItemTemplate, data: dict, user: User) -> I
     return tpl
 
 
+def _update_children(db: Session, tpl: ItemTemplate, entries: list[dict], changes: dict) -> None:
+    wanted = _resolve_children(db, tpl.type, entries, tpl.id)
+    current = {link.child_template_id: link for link in tpl.child_links}
+    after = {c.id for c, _, _ in wanted}
+
+    for removed_id, link in current.items():
+        if removed_id in after:
+            continue
+        in_use = _linked_children_count(db, tpl.id, removed_id)
+        if in_use:
+            raise DomainError(
+                f"{in_use} item(s) of '{link.child.name}' currently sit inside items of "
+                f"'{tpl.name}' — unlink them before removing that template from the list"
+            )
+    for child, _minimum, maximum in wanted:
+        if maximum is None:
+            continue
+        fullest = _fullest_parent(db, tpl.id, child.id)
+        if fullest > maximum:
+            raise DomainError(
+                f"An item of '{tpl.name}' already holds {fullest} × '{child.name}' — "
+                f"unlink some before lowering the maximum to {maximum}"
+            )
+
+    before = {
+        tid: [link.min_count, link.max_count] for tid, link in current.items()
+    }
+    for removed_id, link in current.items():
+        if removed_id not in after:
+            tpl.child_links.remove(link)
+    for child, minimum, maximum in wanted:
+        link = current.get(child.id)
+        if link is None:
+            tpl.child_links.append(
+                TemplateChild(child_template_id=child.id, min_count=minimum, max_count=maximum)
+            )
+        else:
+            link.min_count, link.max_count = minimum, maximum
+    now = {c.id: [lo, hi] for c, lo, hi in wanted}
+    if now != before:
+        changes["children"] = {
+            "before": {str(k): v for k, v in before.items()},
+            "after": {str(k): v for k, v in now.items()},
+        }
+    _refresh_children(
+        db, tpl, [c for c, _, _ in wanted] + [link.child for link in current.values()]
+    )
+
+
 def _linked_children_count(db: Session, parent_tpl_id: int, child_tpl_id: int) -> int:
     parent = aliased(Item)
     return (
@@ -334,6 +481,23 @@ def _linked_children_count(db: Session, parent_tpl_id: int, child_tpl_id: int) -
         .scalar()
         or 0
     )
+
+
+def _fullest_parent(db: Session, parent_tpl_id: int, child_tpl_id: int) -> int:
+    """The most units of ``child_tpl_id`` any one item of ``parent_tpl_id`` holds."""
+    parent = aliased(Item)
+    per_parent = (
+        db.query(func.sum(Item.quantity).label("units"))
+        .join(parent, Item.parent_id == parent.id)
+        .filter(
+            Item.template_id == child_tpl_id,
+            parent.template_id == parent_tpl_id,
+            Item.state != ItemState.destroyed,
+        )
+        .group_by(parent.id)
+        .subquery()
+    )
+    return db.query(func.coalesce(func.max(per_parent.c.units), 0)).scalar() or 0
 
 
 # ─────────────────────────── delete ───────────────────────────

@@ -8,6 +8,7 @@ kept on the row for the download.
 from __future__ import annotations
 
 import secrets
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -78,6 +79,41 @@ async def store_upload(
     db.add(doc)
     db.flush()
     return doc
+
+
+def copy_document(
+    db: Session,
+    doc: Document,
+    user: User,
+    *,
+    item_id: int | None = None,
+    template_id: int | None = None,
+    field_id: int | None = None,
+) -> Document:
+    """A second, independent copy of a document (its own file on disk)."""
+    key = None
+    if doc.storage_key:
+        source = path_for(doc)
+        if not source.exists():
+            raise DomainError(f"The file of '{doc.name}' is missing from storage")
+        key = f"{secrets.token_hex(16)}{Path(doc.storage_key).suffix}"
+        shutil.copyfile(source, upload_root() / key)
+    copy = Document(
+        item_id=item_id,
+        template_id=template_id,
+        field_id=field_id,
+        name=doc.name,
+        doc_type=doc.doc_type,
+        url=doc.url,
+        storage_key=key,
+        original_filename=doc.original_filename,
+        content_type=doc.content_type,
+        size_bytes=doc.size_bytes,
+        uploaded_by=user.id,
+    )
+    db.add(copy)
+    db.flush()
+    return copy
 
 
 def delete_document(db: Session, doc: Document) -> None:
