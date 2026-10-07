@@ -3,6 +3,7 @@ import type {
   CardType,
   ChangeAction,
   ChangeStatus,
+  FieldConfig,
   FieldMode,
   FieldType,
   ItemState,
@@ -10,7 +11,7 @@ import type {
   StorageStatus,
   UserRole,
 } from '@/api/types'
-import { i18n } from '@/i18n'
+import { AVAILABLE_LOCALES, i18n } from '@/i18n'
 
 // A translated label map: reading `MAP[key]` returns the localized string for
 // `enums.<ns>.<key>`. Because it calls i18n's `t()` (which reads the reactive
@@ -119,6 +120,23 @@ export const STORAGE_ICONS: Record<StorageStatus, string> = {
 export const FIELD_MODES: FieldMode[] = ['fixed', 'choice', 'item']
 export const FIELD_MODE_LABELS = labelMap<FieldMode>('fieldMode')
 export const FIELD_TYPE_LABELS = labelMap<FieldType>('fieldType')
+
+/**
+ * A field's name in the UI language. A field still carrying its type's default
+ * name (in any language — "Location", "מיקום") follows the UI language; a
+ * name given for this language on the field wins; otherwise its own name.
+ */
+export function fieldLabel(f: { label: string; field_type: FieldType; config?: FieldConfig | null }): string {
+  const locale = String(i18n.global.locale.value)
+  const own = f.config?.labels?.[locale]?.trim()
+  if (own) return own
+  const name = f.label.trim().toLowerCase()
+  const isDefault = AVAILABLE_LOCALES.some((l) => {
+    const msgs = i18n.global.getLocaleMessage(l.code) as { enums?: { fieldType?: Record<string, string> } }
+    return msgs.enums?.fieldType?.[f.field_type]?.toLowerCase() === name
+  })
+  return isDefault ? FIELD_TYPE_LABELS[f.field_type] : f.label
+}
 
 /** Grouped for the "add field" menu. */
 export const FIELD_TYPE_GROUPS: { group: string; types: FieldType[] }[] = [

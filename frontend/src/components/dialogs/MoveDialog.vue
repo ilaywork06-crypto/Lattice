@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { locationsApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
 import type { LocationOut } from '@/api/types'
+import { isolate } from '@/utils/bidi'
 
 const props = defineProps<{
   modelValue: boolean
@@ -68,7 +69,7 @@ function submit() {
         <v-autocomplete
           v-model="locationId"
           :label="$t('dlg.move.destination')"
-          :items="locations.map((l) => ({ title: l.name, value: l.id, subtitle: l.is_desiccator ? $t('fieldInput.desiccator') : l.building ?? undefined }))"
+          :items="locations.map((l) => ({ title: l.name, value: l.id, subtitle: l.is_desiccator ? $t('fieldInput.desiccator') : l.building ? isolate(l.building) : undefined }))"
           item-title="title"
           item-value="value"
           :error="locError"

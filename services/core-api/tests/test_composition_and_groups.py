@@ -325,3 +325,47 @@ def test_moving_a_container_re_checks_the_stock_of_its_cards(client, admin, monk
     comps = [c for e in published if e.type.value == "inventory.low_stock"
              for c in e.payload["components"]]
     assert any(x["template_id"] == card["id"] for x in comps)
+
+
+def test_an_item_is_linked_to_its_parent_and_contents_while_being_created(client, admin):
+    card = _create_tpl(client, admin, "card", "Born Card", "BNC")
+    box = _create_tpl(client, admin, "assembly", "Born Box", "BNB",
+                      children=[{"template_id": card["id"], "max_count": 2}])
+    rig = _create_tpl(client, admin, "setup", "Born Rig", "BNR",
+                      children=[{"template_id": box["id"]}])
+    r = _new(client, admin, rig["id"])
+    cards = [_new(client, admin, card["id"]) for _ in range(3)]
+
+    # A new assembly goes straight into the rig and takes two cards with it.
+    res = client.post("/items", json={
+        "template_id": box["id"], "parent_id": r["id"],
+        "child_ids": [cards[0]["id"], cards[1]["id"]],
+    }, headers=admin)
+    assert res.status_code == 201, res.text
+    made = res.json()
+    assert made["parent_id"] == r["id"]
+    assert sorted(c["id"] for c in made["children"]) == sorted([cards[0]["id"], cards[1]["id"]])
+
+    # Only what the templates allow, within their limits — and nothing is
+    # created when the links are refused.
+    before = len(client.get(f"/items?template_id={box['id']}", headers=admin).json())
+    for body in (
+        {"template_id": box["id"], "child_ids": [c["id"] for c in cards]},  # over the max
+        {"template_id": box["id"], "parent_id": cards[2]["id"]},  # a card can't hold it
+        {"template_id": rig["id"], "parent_id": r["id"]},  # setups are always on top
+    ):
+        res = client.post("/items", json=body, headers=admin)
+        assert res.status_code == 400, (body, res.text)
+    assert len(client.get(f"/items?template_id={box['id']}", headers=admin).json()) == before
+
+
+def test_fields_carry_names_in_other_languages(client, admin):
+    tpl = _create_tpl(client, admin, "card", "Named Card", "NMC", fields=[
+        {"label": "Board code", "field_type": "string",
+         "config": {"labels": {"he": "  קוד לוח ", "en": ""}}},
+    ])
+    assert tpl["fields"][0]["config"]["labels"] == {"he": "קוד לוח"}
+    bad = client.post("/templates", json=_tpl_body("card", "Bad Names", "BDN", fields=[
+        {"label": "X", "field_type": "text", "config": {"labels": {"hebrew!": "x"}}},
+    ]), headers=admin)
+    assert bad.status_code == 400

@@ -4,6 +4,7 @@ import { itemsApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
 import { TYPE_LABELS } from '@/constants'
 import type { ItemListOut, ItemType, TemplateBrief } from '@/api/types'
+import { isolate } from '@/utils/bidi'
 
 // Parents on offer are exactly the items whose template lists this item's
 // template as allowed contents — a card can go into a setup as well as an
@@ -62,7 +63,7 @@ const choices = computed(() =>
     title: `${p.name} · ${p.serial}`,
     missing: p.missing_children,
     value: p.id,
-    subtitle: `${TYPE_LABELS[p.type]}${p.location_name ? ' · ' + p.location_name : ''}`,
+    subtitle: `${TYPE_LABELS[p.type]}${p.location_name ? ' · ' + isolate(p.location_name) : ''}`,
   })),
 )
 

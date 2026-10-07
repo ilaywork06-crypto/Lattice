@@ -320,8 +320,10 @@ def create_item(db: Session, data: dict, user: User) -> Item:
     """Create one item from its template.
 
     ``data``: ``template_id``, ``values`` (``{field key: value}``), optional
-    ``serial`` (otherwise the next one is issued) and ``child_ids`` (existing
-    items to place inside the new one).
+    ``serial`` (otherwise the next one is issued), ``parent_id`` (an existing
+    item to place the new one inside) and ``child_ids`` (existing items to place
+    inside the new one). Parent and contents follow the templates' contents
+    lists and their limits, exactly as linking afterwards would.
     """
     template = db.get(ItemTemplate, data.get("template_id")) if data.get("template_id") else None
     if template is None:
@@ -344,6 +346,16 @@ def create_item(db: Session, data: dict, user: User) -> Item:
         elif f.field_type in fields_svc.SYSTEM_FIELD_TYPES:
             write_system_value(db, item, f.field_type, value)
     _enforce_quantity(item)
+
+    explicit_parent = data.get("parent_id")
+    if explicit_parent:
+        if parent_id and parent_id != explicit_parent:
+            raise DomainError(
+                "Two different parents were given (the parent field and parent_id)"
+            )
+        if template.type == ItemType.setup:
+            raise DomainError("A setup is always at the top — it can't go inside anything")
+        parent_id = explicit_parent
 
     serial = data.get("serial")
     item.serial = (
