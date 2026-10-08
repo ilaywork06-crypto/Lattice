@@ -151,6 +151,8 @@ export interface DocumentOut {
 }
 
 export interface FieldConfig {
+  /** The field's name in other UI languages ({ he: '…', en: '…' }). */
+  labels?: Record<string, string>
   /** A list field's values (ids for reference types) / an enum's strings. */
   options?: unknown[]
   /** "XX-#####": # is a digit the user types, the rest is filled in. */
@@ -404,6 +406,8 @@ export interface ItemCreate {
   /** Leave empty to get the template's next serial. */
   serial?: string | null
   child_ids?: number[]
+  /** An existing item to place the new one inside. */
+  parent_id?: number | null
 }
 
 export interface ItemUpdate {

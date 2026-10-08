@@ -25,6 +25,7 @@ import {
   STATE_LABELS,
   TRACKING_LABELS,
   TYPE_LABELS,
+  fieldLabel,
   formatBytes,
   formatDateTime,
 } from '@/constants'
@@ -354,7 +355,7 @@ onMounted(load)
               <tbody>
                 <tr v-for="f in tpl.fields" :key="f.id" :class="f.mode === 'item' ? 'row-grey' : 'row-white'">
                   <td class="font-weight-medium">
-                    <bdi>{{ f.label }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
+                    <bdi>{{ fieldLabel(f) }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
                     <v-icon v-if="f.mode === 'choice' || f.field_type === 'enum'" icon="mdi-menu-down" size="16" />
                   </td>
                   <td>

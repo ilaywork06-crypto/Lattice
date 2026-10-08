@@ -12,7 +12,7 @@ import { extractErrorList } from '@/api/client'
 import { itemsApi, templatesApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
 import FieldInput from '@/components/FieldInput.vue'
-import { CARD_TYPE_LABELS, TYPE_LABELS } from '@/constants'
+import { CARD_TYPE_LABELS, TYPE_LABELS, fieldLabel } from '@/constants'
 import type {
   ItemCreate,
   ItemListOut,
@@ -23,6 +23,7 @@ import type {
   TemplateOut,
   TemplateSummary,
 } from '@/api/types'
+import { isolate } from '@/utils/bidi'
 
 const props = defineProps<{
   modelValue: boolean
@@ -33,6 +34,8 @@ const props = defineProps<{
   templateId?: number | null
   /** edit: the item */
   item?: ItemOut | null
+  /** create: preselect the item to place the new one inside */
+  parentId?: number | null
   direct: boolean
 }>()
 
@@ -59,6 +62,9 @@ const original = ref<Record<string, unknown>>({})
 const serial = ref('')
 const childIds = ref<number[]>([])
 const childOptions = ref<ItemListOut[]>([])
+// Where the new item goes: an item whose template lists this one as contents.
+const parentId = ref<number | null>(null)
+const parentOptions = ref<ItemListOut[]>([])
 const fieldErrors = ref<Record<string, string>>({})
 const formRef = ref()
 const saving = ref(false)
@@ -105,14 +111,19 @@ async function loadTemplate(id: number | null) {
       }
       serial.value = ''
       childIds.value = []
-      if (template.value.child_templates.length) {
-        childOptions.value = (await itemsApi.list({
-          child_of_template: id,
-          include_destroyed: false,
-        })).sort((a, b) => Number(!!a.parent_id) - Number(!!b.parent_id) || a.serial.localeCompare(b.serial))
-      } else {
-        childOptions.value = []
-      }
+      parentId.value = props.parentId ?? null
+      const [children, parents] = await Promise.all([
+        template.value.child_templates.length
+          ? itemsApi.list({ child_of_template: id, include_destroyed: false })
+          : Promise.resolve([] as ItemListOut[]),
+        template.value.parent_templates.length && !hasParentField.value
+          ? itemsApi.list({ parent_of_template: id, include_destroyed: false })
+          : Promise.resolve([] as ItemListOut[]),
+      ])
+      childOptions.value = children.sort(
+        (a, b) => Number(!!a.parent_id) - Number(!!b.parent_id) || a.serial.localeCompare(b.serial),
+      )
+      parentOptions.value = parents
     }
   } catch (e) {
     ui.error(e)
@@ -156,11 +167,47 @@ const templateChoices = computed(() =>
   })),
 )
 
+// A template with its own "parent" field picks the parent there.
+const hasParentField = computed(
+  () => !!template.value?.fields.some((f) => f.field_type === 'parent' && f.mode !== 'fixed'),
+)
+const showParentPicker = computed(
+  () => props.mode === 'create' && !!template.value?.parent_templates.length && !hasParentField.value,
+)
+const showLinks = computed(
+  () => props.mode === 'create' && !!template.value && (showParentPicker.value || !!template.value.child_templates.length),
+)
+
+const parentChoices = computed(() =>
+  parentOptions.value.map((p) => ({
+    title: `${p.name} · ${p.serial}`,
+    value: p.id,
+    subtitle: `${TYPE_LABELS[p.type]}${p.location_name ? ' · ' + isolate(p.location_name) : ''}`,
+    missing: p.missing_children,
+  })),
+)
+
+// Contents against the template's limits, per child template.
+const limitRows = computed(() =>
+  (template.value?.children ?? []).map((c) => {
+    const count = childOptions.value.filter(
+      (o) => childIds.value.includes(o.id) && o.template_id === c.template.id,
+    ).reduce((n, o) => n + (o.quantity || 1), 0)
+    return { ...c, count, over: c.max_count != null && count > c.max_count, short: Math.max(c.min_count - count, 0) }
+  }),
+)
+const overLimit = computed(() => limitRows.value.filter((r) => r.over))
+function limitText(min: number, max: number | null): string {
+  if (max == null) return min ? t('templates.limitAtLeast', { min }) : t('templates.limitNone')
+  if (min === max) return t('templates.limitExactly', { n: min })
+  return t('templates.limitRange', { min, max })
+}
+
 const childChoices = computed(() =>
   childOptions.value.map((c) => ({
     title: `${c.name} · ${c.serial}`,
     value: c.id,
-    subtitle: c.parent_id ? t('itemForm.willMove', { from: c.parent_label }) : c.location_name ?? '',
+    subtitle: c.parent_id ? t('itemForm.willMove', { from: c.parent_label }) : c.location_name ? isolate(c.location_name) : '',
   })),
 )
 
@@ -187,6 +234,11 @@ async function submit() {
   if (!template.value) return
   fieldErrors.value = {}
 
+  if (props.mode === 'create' && overLimit.value.length) {
+    ui.warning(t('itemForm.overLimit', { names: overLimit.value.map((r) => r.template.name).join(', ') }))
+    return
+  }
+
   let payload: ItemCreate | ItemUpdate
   if (props.mode === 'create') {
     const vals: Record<string, unknown> = {}
@@ -196,6 +248,7 @@ async function submit() {
       values: vals,
       serial: serial.value.trim() || null,
       child_ids: childIds.value,
+      parent_id: showParentPicker.value ? parentId.value : null,
     }
   } else {
     payload = { values: changedValues() }
@@ -280,7 +333,7 @@ const dialogTitle = computed(() => {
               <div class="text-overline text-medium-emphasis mb-1">{{ $t('itemForm.fromTemplate') }}</div>
               <div class="d-flex flex-wrap gap-2">
                 <v-chip v-for="f in fixedFields" :key="f.id" size="small" variant="outlined" label>
-                  <span class="text-medium-emphasis me-1"><bdi>{{ f.label }}</bdi>:</span> {{ display(f) }}
+                  <span class="text-medium-emphasis me-1"><bdi>{{ fieldLabel(f) }}</bdi>:</span> {{ display(f) }}
                 </v-chip>
               </div>
             </div>
@@ -320,26 +373,67 @@ const dialogTitle = computed(() => {
               {{ $t('itemForm.nothingToFill') }}
             </v-alert>
 
-            <!-- contents (containers) -->
-            <v-autocomplete
-              v-if="mode === 'create' && template.child_templates.length"
-              v-model="childIds"
-              :label="$t('itemForm.contents')"
-              :items="childChoices"
-              item-title="title"
-              item-value="value"
-              multiple
-              chips
-              closable-chips
-              prepend-inner-icon="mdi-file-tree-outline"
-              :hint="$t('itemForm.contentsHint', { names: template.child_templates.map((c) => c.name).join(', ') })"
-              persistent-hint
-              class="mt-2"
-            >
-              <template #item="{ props: itemProps, item }">
-                <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
+            <!-- links: where it goes, and what goes inside it -->
+            <template v-if="showLinks">
+              <div class="text-overline text-medium-emphasis mt-2">{{ $t('itemForm.links') }}</div>
+              <v-autocomplete
+                v-if="showParentPicker"
+                v-model="parentId"
+                :label="$t('itemForm.parent')"
+                :items="parentChoices"
+                item-title="title"
+                item-value="value"
+                clearable
+                prepend-inner-icon="mdi-link-variant"
+                :no-data-text="$t('itemForm.noParents')"
+                :hint="$t('itemForm.parentHint', { names: template.parent_templates.map((p) => p.name).join(', ') })"
+                persistent-hint
+                class="mb-3"
+              >
+                <template #item="{ props: itemProps, item }">
+                  <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle">
+                    <template v-if="item.raw.missing" #append>
+                      <v-chip size="x-small" color="warning" variant="tonal">
+                        {{ $t('detail.missingN', { n: item.raw.missing }) }}
+                      </v-chip>
+                    </template>
+                  </v-list-item>
+                </template>
+              </v-autocomplete>
+
+              <template v-if="template.child_templates.length">
+                <v-autocomplete
+                  v-model="childIds"
+                  :label="$t('itemForm.contents')"
+                  :items="childChoices"
+                  item-title="title"
+                  item-value="value"
+                  multiple
+                  chips
+                  closable-chips
+                  prepend-inner-icon="mdi-file-tree-outline"
+                  :no-data-text="$t('itemForm.noChildren')"
+                  :error-messages="overLimit.length ? [$t('itemForm.overLimit', { names: overLimit.map((r) => r.template.name).join(', ') })] : []"
+                  :hint="$t('itemForm.contentsHint', { names: template.child_templates.map((c) => c.name).join(', ') })"
+                  persistent-hint
+                >
+                  <template #item="{ props: itemProps, item }">
+                    <v-list-item v-bind="itemProps" :subtitle="item.raw.subtitle" />
+                  </template>
+                </v-autocomplete>
+                <div v-if="limitRows.some((r) => r.min_count || r.max_count != null)" class="d-flex flex-wrap gap-2 mt-2">
+                  <v-chip
+                    v-for="r in limitRows"
+                    :key="r.template.id"
+                    size="small"
+                    variant="tonal"
+                    :color="r.over ? 'error' : r.short ? 'warning' : 'success'"
+                  >
+                    <bdi>{{ r.template.name }}</bdi>: {{ r.count }} · {{ limitText(r.min_count, r.max_count) }}
+                  </v-chip>
+                </div>
               </template>
-            </v-autocomplete>
+            </template>
           </template>
         </v-form>
       </v-card-text>

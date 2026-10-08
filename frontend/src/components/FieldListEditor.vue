@@ -20,6 +20,7 @@ import {
 } from '@/constants'
 import type { CardType, FieldConfig, FieldMode, FieldType, ItemType } from '@/api/types'
 import { type FieldRow, newFieldRow } from '@/lib/fieldRows'
+import { AVAILABLE_LOCALES, isRtl } from '@/i18n'
 
 const props = defineProps<{
   /** The template kind the fields are for; null = any (a field group). */
@@ -60,6 +61,13 @@ function modesFor(ft: FieldType): FieldMode[] {
   if (PER_UNIT_FIELD_TYPES.includes(ft)) return ft === 'parent' ? ['item'] : ['choice', 'item']
   if (ft === 'files') return ['fixed', 'item']
   return ['fixed', 'choice', 'item']
+}
+
+function setLabelIn(row: FieldRow, code: string, value: string) {
+  const labels = { ...(row.config.labels ?? {}) }
+  if (value?.trim()) labels[code] = value
+  else delete labels[code]
+  row.config = { ...row.config, labels: Object.keys(labels).length ? labels : undefined }
 }
 
 function setMode(row: FieldRow, mode: FieldMode) {
@@ -208,6 +216,18 @@ function optionsModel(row: FieldRow) {
       <v-expand-transition>
         <div v-if="row.expanded" class="mt-3">
           <v-row dense>
+            <!-- the field's name in each UI language (optional) -->
+            <v-col v-for="loc in AVAILABLE_LOCALES" :key="loc.code" cols="12" sm="6">
+              <v-text-field
+                :model-value="row.config.labels?.[loc.code] ?? ''"
+                :label="$t('tplEditor.nameIn', { lang: loc.native })"
+                :placeholder="row.label"
+                :dir="isRtl(loc.code) ? 'rtl' : 'ltr'"
+                density="compact"
+                :hint="$t('tplEditor.nameInHint')"
+                @update:model-value="(v: string) => setLabelIn(row, loc.code, v)"
+              />
+            </v-col>
             <!-- the enum's own values -->
             <v-col v-if="row.field_type === 'enum'" cols="12">
               <v-combobox
@@ -224,7 +244,7 @@ function optionsModel(row: FieldRow) {
             <v-col v-else-if="row.mode === 'choice'" cols="12">
               <FieldInput
                 v-model="optionsModel(row).value"
-                :field="{ ...row, label: $t('tplEditor.listValues') }"
+                :field="{ ...row, label: $t('tplEditor.listValues'), config: { ...row.config, labels: undefined } }"
                 mode="options"
               />
               <div class="text-caption text-medium-emphasis mt-n2 mb-2">
@@ -256,7 +276,7 @@ function optionsModel(row: FieldRow) {
             <v-col v-if="row.mode === 'fixed' && row.field_type !== 'files'" cols="12">
               <FieldInput
                 v-model="row.fixed_value"
-                :field="{ ...row, label: $t('tplEditor.templateValue', { name: row.label }) }"
+                :field="{ ...row, label: $t('tplEditor.templateValue', { name: row.label }), config: { ...row.config, labels: undefined } }"
               />
             </v-col>
             <v-col v-if="row.mode === 'fixed' && row.field_type === 'files'" cols="12">

@@ -10,7 +10,12 @@ import { useUiStore } from '@/stores/ui'
 import EmptyState from '@/components/EmptyState.vue'
 import FieldListEditor from '@/components/FieldListEditor.vue'
 import ConfirmDialog from '@/components/dialogs/ConfirmDialog.vue'
-import { FIELD_TYPE_ICONS, FIELD_TYPE_LABELS, formatDate } from '@/constants'
+import {
+  FIELD_TYPE_ICONS,
+  FIELD_TYPE_LABELS,
+  fieldLabel,
+  formatDate,
+} from '@/constants'
 import { type FieldRow, cleanFields, rowsFromGroup } from '@/lib/fieldRows'
 import type { FieldGroupOut } from '@/api/types'
 
@@ -171,7 +176,7 @@ defineExpose({ load })
                 :prepend-icon="FIELD_TYPE_ICONS[f.field_type]"
                 :title="FIELD_TYPE_LABELS[f.field_type]"
               >
-                <bdi>{{ f.label }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
+                <bdi>{{ fieldLabel(f) }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
               </v-chip>
             </div>
             <div class="text-caption text-medium-emphasis mt-3">

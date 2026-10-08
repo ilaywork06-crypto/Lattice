@@ -727,7 +727,7 @@ export default {
     nameRequired: 'Name is required',
     parentOf: 'Parent ({type})',
     parentLabel: 'Link into (parent)',
-    parentHint: 'A card can sit directly in a setup or an assembly.',
+    parentHint: 'Only items whose template can hold it: {names}.',
     includeChildrenSetup: 'Include assemblies & cards',
     includeChildrenAssembly: 'Include cards',
     includeChildrenHint: 'Pick existing items to place inside this one now.',
@@ -755,6 +755,11 @@ export default {
     nothingToFill: 'Everything comes from the template — nothing to fill in.',
     contents: 'Contents',
     contentsHint: 'Existing items to place inside ({names}).',
+    links: 'Links',
+    parent: 'Place it inside (optional)',
+    noParents: 'No item can hold it yet — create one first, or link it later.',
+    noChildren: 'No items of these templates exist yet.',
+    overLimit: 'Too many for the template’s maximum: {names}',
   },
 
   search: {
@@ -1015,6 +1020,8 @@ export default {
     moveUp: 'Move up',
     moveDown: 'Move down',
     fieldSettings: 'Field settings',
+    nameIn: 'Name ({lang})',
+    nameInHint: 'Optional — shown when the app is in that language.',
   },
 
   fieldInput: {

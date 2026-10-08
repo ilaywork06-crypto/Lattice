@@ -45,6 +45,7 @@ DEFAULT_DESCRIPTION_MIN = 8
 _LETTERS = [chr(c) for c in range(ord("A"), ord("Z") + 1)]
 _URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://\S+$")
 _KEY_RE = re.compile(r"[^a-z0-9]+")
+_LANG_RE = re.compile(r"^[a-z]{2,3}$")
 
 # Field types whose value is a list (everything else is a scalar).
 MULTI_VALUE_TYPES = frozenset({FieldType.managers, FieldType.files})
@@ -455,6 +456,24 @@ def _normalize_config(
     db: Session, field_type: FieldType, mode: FieldMode, config: dict, where: str
 ) -> dict:
     clean: dict = {}
+
+    # The field's name in other UI languages ({"he": "…", "en": "…"}); the
+    # label itself stays the name used by the API and the Excel files.
+    labels = config.get("labels")
+    if labels:
+        if not isinstance(labels, dict):
+            raise DomainError(f"{where}: the translated names must be a language → name map")
+        names = {}
+        for lang, name in labels.items():
+            lang, name = str(lang).strip().lower(), str(name or "").strip()
+            if not _LANG_RE.match(lang):
+                raise DomainError(f"{where}: '{lang}' is not a language code")
+            if len(name) > 255:
+                raise DomainError(f"{where}: the {lang} name is too long")
+            if name:
+                names[lang] = name
+        if names:
+            clean["labels"] = names
 
     if field_type in (FieldType.string, FieldType.serial_string) and config.get("pattern"):
         pattern = str(config["pattern"]).strip()

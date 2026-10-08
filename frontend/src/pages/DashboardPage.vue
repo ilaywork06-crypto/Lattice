@@ -9,6 +9,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { TYPE_COLORS, auditActionLabel, formatDate, timeAgo } from '@/constants'
 import type { AuditOut, InventorySummary, ThresholdOut } from '@/api/types'
+import { isolate } from '@/utils/bidi'
 
 const router = useRouter()
 const ui = useUiStore()
@@ -205,7 +206,7 @@ onMounted(load)
               <v-list-item
                 v-for="a in activity"
                 :key="a.id"
-                :subtitle="a.summary"
+                :subtitle="isolate(a.summary)"
                 @click="a.item_id ? router.push(`/items/${a.item_id}`) : a.template_id && router.push(`/templates/${a.template_id}`)"
               >
                 <template #prepend>

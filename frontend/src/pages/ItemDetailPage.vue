@@ -28,6 +28,7 @@ import {
   STORAGE_COLORS,
   STORAGE_LABELS,
   TYPE_LABELS,
+  fieldLabel,
   formatBytes,
   formatDate,
   formatDateTime,
@@ -680,7 +681,7 @@ onMounted(loadItem)
             class="mt-4"
             icon="mdi-alert-outline"
           >
-            {{ $t('detail.missingRequired', { fields: missingRequired.map((f) => f.label).join(', ') }) }}
+            {{ $t('detail.missingRequired', { fields: missingRequired.map((f) => fieldLabel(f)).join(', ') }) }}
           </v-alert>
         </v-card-text>
       </v-card>
@@ -703,7 +704,7 @@ onMounted(loadItem)
                   <v-icon :icon="FIELD_TYPE_ICONS[f.field_type]" size="20" class="text-medium-emphasis" />
                   <div class="overflow-hidden">
                     <div class="text-caption text-medium-emphasis">
-                      <bdi>{{ f.label }}</bdi><span v-if="f.required" class="text-error">*</span>
+                      <bdi>{{ fieldLabel(f) }}</bdi><span v-if="f.required" class="text-error">*</span>
                       <v-icon v-if="f.mode === 'fixed'" icon="mdi-lock-outline" size="12" class="ms-1" :title="$t('detail.fromTemplate')" />
                     </div>
                     <div v-if="fieldFiles(f).length" class="d-flex flex-wrap gap-1 mt-1">

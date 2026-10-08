@@ -726,7 +726,7 @@ export default {
     nameRequired: 'שם הוא שדה חובה',
     parentOf: 'אב ({type})',
     parentLabel: 'שיוך לאב',
-    parentHint: 'כרטיס יכול לשבת ישירות בסטאפ או במכלול.',
+    parentHint: 'מוצגים רק פריטים שהתבנית שלהם יכולה להכיל אותו: {names}.',
     includeChildrenSetup: 'כלול מכלולים וכרטיסים',
     includeChildrenAssembly: 'כלול כרטיסים',
     includeChildrenHint: 'בחרו פריטים קיימים למקם בתוך הפריט הזה עכשיו.',
@@ -754,6 +754,11 @@ export default {
     nothingToFill: 'הכול מגיע מהתבנית — אין מה למלא.',
     contents: 'תכולה',
     contentsHint: 'פריטים קיימים לשייך לתוכו ({names}).',
+    links: 'קישורים',
+    parent: 'שיוך לפריט אב (רשות)',
+    noParents: 'עדיין אין פריט שיכול להכיל אותו — צרו אחד קודם, או קשרו מאוחר יותר.',
+    noChildren: 'עדיין אין פריטים מהתבניות האלה.',
+    overLimit: 'יותר מהמקסימום שבתבנית: {names}',
   },
 
   search: {
@@ -1014,6 +1019,8 @@ export default {
     moveUp: 'הזזה למעלה',
     moveDown: 'הזזה למטה',
     fieldSettings: 'הגדרות שדה',
+    nameIn: 'שם ({lang})',
+    nameInHint: 'רשות — יוצג כשהאפליקציה בשפה הזו.',
   },
 
   fieldInput: {

@@ -461,6 +461,9 @@ class ItemCreate(BaseModel):
     serial: str | None = None
     # Existing items to place inside the new one.
     child_ids: list[int] = Field(default_factory=list)
+    # An existing item to place the new one inside (when the template has a
+    # parent field, its value may be given there instead — not both).
+    parent_id: int | None = None
 
 
 class ItemUpdate(BaseModel):

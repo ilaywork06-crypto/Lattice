@@ -69,29 +69,15 @@ body {
 
 /* ── Bidirectional text ──────────────────────────────────────────────────
    Hebrew and English mix freely (a Hebrew UI showing English part names, a
-   Hebrew name inside an English server message). Each block of user data or
-   message text takes its direction from its own first strong character, while
-   alignment still follows the page; interpolated values are isolated in the
-   translation layer (utils/bidi.ts) and with <bdi> in markup. */
+   Hebrew name inside an English server message). Text always *aligns* with
+   the page language; what changes direction is only the embedded piece: user
+   data sits in <bdi> (direction from its own content, isolated from the
+   sentence around it) and interpolated translation values are wrapped in
+   Unicode isolates (utils/bidi.ts). Inputs keep the page direction (an empty
+   `dir="auto"` input would fall back to LTR and push Hebrew placeholders
+   left); codes and formats opt into LTR with `dir="ltr"`. */
 bdi {
   unicode-bidi: isolate;
-}
-.v-data-table td,
-.v-table td,
-.v-list-item-title,
-.v-list-item-subtitle,
-.v-card-title,
-.v-card-subtitle,
-.v-alert__content,
-.v-snackbar__content,
-.v-timeline-item__body,
-.v-chip__content,
-.v-field__input,
-.v-field__input input,
-.v-field textarea,
-.v-messages__message,
-.bidi-auto {
-  unicode-bidi: plaintext;
 }
 /* Serials, prefixes, formats and codes are always left-to-right. */
 .font-mono,

@@ -16,6 +16,7 @@ import {
   LETTERS,
   STATE_LABELS,
   applyPattern,
+  fieldLabel,
   formatBytes,
   formatDate,
   parseDay,
@@ -28,6 +29,7 @@ import type {
   FieldType,
   ItemListOut,
 } from '@/api/types'
+import { isolate } from '@/utils/bidi'
 
 export interface FieldMeta {
   key?: string | null
@@ -69,7 +71,7 @@ const fromList = computed(
   () => !isOptions.value && (props.field.mode === 'choice' || ft.value === 'enum'),
 )
 const label = computed(() =>
-  props.hideLabel ? undefined : props.field.label + (props.field.required && !isOptions.value ? ' *' : ''),
+  props.hideLabel ? undefined : fieldLabel(props.field) + (props.field.required && !isOptions.value ? ' *' : ''),
 )
 const icon = computed(() => FIELD_TYPE_ICONS[ft.value])
 
@@ -138,13 +140,13 @@ const typeChoices = computed<Choice[]>(() => {
         .map((l) => ({
           title: l.name,
           value: l.id,
-          subtitle: l.is_desiccator ? t('fieldInput.desiccator') : l.building ?? undefined,
+          subtitle: l.is_desiccator ? t('fieldInput.desiccator') : l.building ? isolate(l.building) : undefined,
         }))
     case 'parent':
       return parentItems.value.map((i) => ({
         title: `${i.name} · ${i.serial}`,
         value: i.id,
-        subtitle: i.location_name ?? undefined,
+        subtitle: i.location_name ? isolate(i.location_name) : undefined,
       }))
     case 'status':
       return ITEM_STATES.map((s) => ({ title: STATE_LABELS[s], value: s }))

@@ -3,7 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import { fieldGroupsApi } from '@/api/services'
 import { useUiStore } from '@/stores/ui'
-import { FIELD_TYPE_ICONS, FIELD_TYPE_LABELS } from '@/constants'
+import { FIELD_TYPE_ICONS, FIELD_TYPE_LABELS, fieldLabel } from '@/constants'
 import type { FieldGroupOut } from '@/api/types'
 
 const open = defineModel<boolean>({ required: true })
@@ -109,7 +109,7 @@ function load() {
                 :prepend-icon="FIELD_TYPE_ICONS[f.field_type]"
                 :title="FIELD_TYPE_LABELS[f.field_type]"
               >
-                <bdi>{{ f.label }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
+                <bdi>{{ fieldLabel(f) }}</bdi><span v-if="f.required" class="text-error ms-1">*</span>
               </v-chip>
             </div>
           </v-list-item>
